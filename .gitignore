@@ -1,0 +1,6 @@
+# Written by Claude Code each time it loads a mod
+.claude-plugin/types/
+.DS_Store
+
+# Release notes for the maintainer
+HOW TO SUBMIT.md

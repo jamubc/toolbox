@@ -1,0 +1,12 @@
+{
+  "name": "jam",
+  "owner": { "name": "jamubc" },
+  "description": "Small Claude Code mods by jamubc.",
+  "plugins": [
+    {
+      "name": "redline",
+      "source": "./plugins/redline",
+      "description": "A turbo boost gauge above your prompt: the more of your Claude sessions are working, the higher the needle."
+    }
+  ]
+}

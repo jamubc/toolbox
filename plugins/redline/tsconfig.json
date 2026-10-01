@@ -1,0 +1,5 @@
+{
+  "extends": "./.claude-plugin/types/tsconfig.json",
+  // esnext declares Uint8Array.prototype.toBase64, which the hooks runtime has.
+  "compilerOptions": { "lib": ["esnext"] }
+}
