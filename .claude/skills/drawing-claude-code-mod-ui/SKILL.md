@@ -9,6 +9,9 @@ Elements come from `$.ui.resolve(e)`. JSX compiles to them. API details: `plugin
 
 **These are starting points, not house style.** The visual language for these mods (icons, glyphs, colors, pixel versus cell rendering, density, sizes) is not settled. Every number, glyph and color below is what one mod happened to use. When the person asks for a look, build that look; when nothing is asked, try alternatives and show them. Check the build's types (`.claude-plugin/types/claude-code/index.d.ts`, grep `Props = {`) for props this page does not show: the element set grows.
 
+See: https://code.claude.com/docs/en/plugins/mods/reference for mod references.
+See: https://code.claude.com/docs/en/plugins/mods/test for mod testing.
+
 ## Every element, by surface
 
 | Element | Terminal | Desktop | Use it for |
