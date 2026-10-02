@@ -12,6 +12,11 @@
       "name": "channel",
       "source": "./plugins/channel",
       "description": "Your chats in a pane beside Claude Code: read, reply, and get a toast when someone messages you. iMessage today, more chat apps to come."
+    },
+    {
+      "name": "instantnotes",
+      "source": "./plugins/instantnotes",
+      "description": "Your InstantNotes in a pane beside Claude Code: search, read a note as Markdown, and capture a new one with /note."
     }
   ]
 }

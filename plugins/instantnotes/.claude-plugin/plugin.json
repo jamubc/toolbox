@@ -1,0 +1,24 @@
+{
+  "name": "instantnotes",
+  "version": "0.1.0",
+  "description": "Your InstantNotes in a pane beside Claude Code: search, read a note as Markdown, and capture a new one with /note.",
+  "author": { "name": "jamubc" },
+  "repository": "https://github.com/jamubc/toolbox",
+  "license": "MIT",
+  "keywords": ["mod", "notes", "instantnotes", "pane", "markdown"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "binary": {
+      "type": "string",
+      "title": "InstantNotes binary",
+      "description": "The instantnotes executable, a path or a name on PATH.",
+      "default": "instantnotes"
+    },
+    "db": {
+      "type": "string",
+      "title": "Library database",
+      "description": "Path to instantnotes.db. Empty uses the app's default location.",
+      "default": ""
+    }
+  }
+}
