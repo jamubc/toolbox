@@ -1,6 +1,6 @@
 # orbit
 
-Where does your Claude session phone? orbit draws a globe in a pane with you as a red dot and an arc for every connection the session makes: the Anthropic stream breathing while Claude writes, a `WebFetch` landing in Ashburn, an MCP server talking to GitHub, a `curl` in a shell. Each arc is traced back to the tool that caused it, the host, the address, the org, the country and the bytes. And like Little Snitch or LuLu, it can block: a deny-list enforced before a tool call runs.
+Where does your Claude session phone? orbit draws a globe in a pane with you as a red dot and an arc for every connection the session makes: the Anthropic stream breathing while Claude writes, a `WebFetch` landing in Ashburn, an MCP server talking to GitHub, a `curl` in a shell. Each arc is traced back to the tool that caused it, the host, the address, the org, the country and the bytes. It can also block: a deny-list enforced before a tool call runs.
 
 ## Install
 
