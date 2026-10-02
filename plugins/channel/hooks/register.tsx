@@ -24,8 +24,13 @@ import type { Picture } from './ui/picture'
 // - Each service reaches only the commands and hosts its spec declares
 //   (core/fence.ts). The mod itself starts one more program, `open`, and only
 //   when the person presses a file. It also starts `sips` to make the small
-//   copy of a picture that the pane shows; those copies are at most twelve temporary
-//   files, each overwritten in turn.
+//   copy of a picture (or a PDF's first page) that the pane shows; those copies
+//   are at most twelve temporary files, each overwritten in turn.
+//
+// Pictures follow the browse pane: a sharp PNG the terminal reads itself where
+// it draws pixels, small bitmaps packed into cells elsewhere, a /config choice
+// between them, and a fall back to cells when the terminal turns out not to
+// draw pixels after all.
 
 const PANE = 'channel'
 const OPEN = '/usr/bin/open'
@@ -35,6 +40,8 @@ const SIPS = '/usr/bin/sips'
 const SHARP = 1600
 const BLOCKS = 200
 const OFFERED_FILES = 5
+// How long after a picture is drawn the terminal is asked whether it took it.
+const PROBE_MS = 400
 // What Claude's reply is cut to as a chat draft.
 const DRAFT = 2000
 
@@ -47,6 +54,8 @@ const APPS: Record<string, string> = {
   WarpTerminal: 'Warp',
   vscode: 'Visual Studio Code',
 }
+
+type Options = { imessage?: boolean; pictures?: string }
 
 // Real pixels where the terminal speaks the kitty graphics protocol. Not
 // through tmux, which drops it, nor over ssh.
@@ -64,26 +73,34 @@ async function hasPixels($: EngineInterface): Promise<boolean> {
   return (await $.env.get('KITTY_WINDOW_ID')) !== undefined || term.includes('kitty') || term.includes('ghostty') || program === 'ghostty'
 }
 
-async function build($: EngineInterface, surface: string, options: Readonly<Record<string, unknown>>): Promise<Hub> {
+// How pictures draw, from /config and the terminal: pixels, cells, or not at all.
+async function pictureMode($: EngineInterface, options: Options): Promise<'pixels' | 'cells' | 'off'> {
+  if (options.pictures === 'off') return 'off'
+  if (options.pictures === 'image') return 'pixels'
+  if (options.pictures === 'blocks') return 'cells'
+
+  return (await hasPixels($)) ? 'pixels' : 'cells'
+}
+
+async function build($: EngineInterface, surface: string, options: Options): Promise<Hub> {
   const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/$/, '')
-  const isPixels = await hasPixels($)
   let generation = 0
   // One at a time: sips is not cheap, and a slot's file must not be half-written.
   let making: Promise<unknown> = Promise.resolve()
 
-  async function thumbnail(path: string, slot: number): Promise<Picture | undefined> {
+  async function thumbnail(path: string, slot: number, asPixels: boolean): Promise<Picture | undefined> {
     const measured = await $.process.run([SIPS, '-g', 'pixelWidth', '-g', 'pixelHeight', path])
     const width = Number(/pixelWidth: (\d+)/.exec(measured.stdout)?.[1])
     const height = Number(/pixelHeight: (\d+)/.exec(measured.stdout)?.[1])
     if (measured.exitCode !== 0 || !(width > 0) || !(height > 0)) {
       return undefined
     }
-    const file = `${tmp}/claude-channel-picture-${slot}.${isPixels ? 'png' : 'bmp'}`
-    const made = await $.process.run([SIPS, '-s', 'format', isPixels ? 'png' : 'bmp', '-Z', String(isPixels ? SHARP : BLOCKS), path, '--out', file])
+    const file = `${tmp}/claude-channel-picture-${slot}.${asPixels ? 'png' : 'bmp'}`
+    const made = await $.process.run([SIPS, '-s', 'format', asPixels ? 'png' : 'bmp', '-Z', String(asPixels ? SHARP : BLOCKS), path, '--out', file])
     if (made.exitCode !== 0) {
       return undefined
     }
-    if (isPixels) {
+    if (asPixels) {
       generation += 1
 
       return { width, height, source: { file, generation } }
@@ -94,13 +111,23 @@ async function build($: EngineInterface, surface: string, options: Readonly<Reco
   }
 
   return createHub(services, {
-    hasPixels: isPixels,
-    thumbnail(path, slot) {
-      const next = making.then(() => thumbnail(path, slot))
+    pictures: await pictureMode($, options),
+    thumbnail(path, slot, asPixels) {
+      const next = making.then(() => thumbnail(path, slot, asPixels))
       making = next.catch(() => undefined)
 
       return next
     },
+    // A blit of the very source the Image already shows sends nothing new,
+    // and answers whether the terminal drew it or its alt text.
+    probe: (key, source) =>
+      new Promise(resolve => {
+        $.clock.after(PROBE_MS, () => {
+          $.ui.blit({ requestId: PANE, key, source: { file: source.file, format: 'png', generation: source.generation } })
+            .then(res => resolve(res.deny === undefined || /mount/i.test(res.deny)))
+            .catch(() => resolve(true))
+        })
+      }),
     tools: {
       run: argv => $.process.run(argv),
       fetch: (url, init) => $.http.fetch(url, init),
@@ -149,7 +176,7 @@ async function build($: EngineInterface, surface: string, options: Readonly<Reco
   })
 }
 
-export const register: Register = (on, options) => {
+export const register: Register = (on, options: Options) => {
   let hub: Hub | undefined
 
   on('session.start', async ($, e, next) => {
@@ -192,6 +219,7 @@ export const register: Register = (on, options) => {
       bodyColumns: e.props.bodyColumns,
       bodyRows: e.props.scroll.bodyRows,
       surface: e.surface,
+      now: await $.clock.now(),
     })
   })
 }

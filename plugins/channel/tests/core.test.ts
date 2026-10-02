@@ -3,7 +3,8 @@ import { expect, test } from 'claude-code/testing'
 import { fence } from '../hooks/core/fence'
 import { ALL, createHub } from '../hooks/core/hub'
 import { clip } from '../hooks/ui/format'
-import { decodeBmp, fit, toCells } from '../hooks/ui/picture'
+import { cellsOf, decodeBmp, fit, toCells } from '../hooks/ui/picture'
+import { colorOf, dayLabel, glyphOf, initialsOf, whenLabel } from '../hooks/ui/format'
 import { conformance } from './kit/conformance'
 import { bmp } from './kit/mac'
 import { fake, message, world } from './kit/fake'
@@ -332,6 +333,55 @@ test('a BMP decodes top-down and bottom-up, and packs into cells', () => {
   // One cell: red and green average to the first column's pixels, top over bottom.
   const cells = top && new Uint32Array(Uint8Array.fromBase64(toCells(top, 2, 1)).buffer)
   expect(cells && [...cells]).toEqual([0x2580, 0xff0000, 0x0000ff, 0x2580, 0x00ff00, 0xffffff])
+  // Shrunk to one cell, each half averages its two pixels instead of picking one.
+  const one = top && new Uint32Array(Uint8Array.fromBase64(toCells(top, 1, 1)).buffer)
+  expect(one && [...one]).toEqual([0x2580, 0x808000, 0x8080ff])
+  // The same bitmap at the same size is the same encoding, not a second pass.
+  expect(top && cellsOf(top, 1, 1)).toBe(top && cellsOf(top, 1, 1))
+  expect(top && cellsOf(top, 1, 1)).toBe(top && toCells(top, 1, 1))
+})
+
+test('rows and messages are labelled by kind, person and day', () => {
+  expect(glyphOf({ mime: 'image/heic', name: 'a.heic' })).toBe('🖼')
+  expect(glyphOf({ mime: 'application/pdf', name: 'a.pdf' })).toBe('📄')
+  expect(glyphOf({ mime: 'application/octet-stream', name: 'clip.mov' })).toBe('🎬')
+  expect(glyphOf({ mime: 'application/zip', name: 'a.zip' })).toBe('📦')
+  expect(glyphOf({ mime: 'application/octet-stream', name: 'a.bin' })).toBe('📎')
+  expect(initialsOf('Ana Lima')).toBe('AL')
+  expect(initialsOf('+15555550101')).toBe('#')
+  expect(initialsOf('')).toBe('?')
+  expect(colorOf('ana')).toBe(colorOf('ana'))
+  expect(colorOf('ana')).toMatch(/^#[0-9a-f]{6}$/)
+  const noon = new Date(2026, 0, 10, 12).getTime()
+  expect(dayLabel(noon - 3_600_000, noon)).toBe('Today')
+  expect(dayLabel(noon - 86_400_000, noon)).toBe('Yesterday')
+  expect(dayLabel(noon - 3 * 86_400_000, noon)).toBe('Wed')
+  expect(dayLabel(noon - 30 * 86_400_000, noon)).toBe('11 Dec 2025')
+  expect(whenLabel(noon - 3_600_000, noon)).toBe('11:00')
+  expect(whenLabel(noon - 86_400_000, noon)).toBe('Yest.')
+})
+
+test('older pages the open conversation back through the service, and marks its start', async () => {
+  const w = world()
+  const slack = fake('slack')
+  const me = w.session('one')
+  slack.state.history.set('a', [message('5', 'a', 'five'), message('6', 'a', 'six')])
+  const hub = createHub([slack.spec], me.deps)
+  await hub.start()
+  await w.settle()
+  await hub.open(A)
+  expect(hub.view.depth).toBe(0)
+  expect(hub.inbox.messages(A).map(one => one.id)).toEqual(['5', '6'])
+
+  await hub.older(10)
+  expect(hub.view.depth).toBe(8)
+  // The fake answers the same page again: nothing new, so this is the start.
+  expect(hub.inbox.messages(A).map(one => one.id)).toEqual(['5', '6'])
+  expect(hub.view.isAtStart).toBe(true)
+  hub.latest()
+  expect(hub.view.depth).toBe(0)
+  expect(hub.previewOf({ id: 'a', name: 'Ana', at: 1, ref: A })).toBe('six')
+  expect(hub.previewOf({ id: 'b', name: 'Book club', at: 2, preview: 'raid at nine', ref: { service: 'slack', conversation: 'b' } })).toBe('raid at nine')
 })
 
 test('a long name is cut to its room with an ellipsis', () => {

@@ -127,9 +127,20 @@ export function messagesApp() {
       case 'conversations':
         return json(
           chats
-            .map(chat => ({ ...chat, last: Math.max(...rows.filter(one => one.conversation === chat.id).map(one => one.id)) }))
-            .sort((a, b) => b.last - a.last)
-            .map(({ last, ...chat }) => ({ ...chat, date: rows.find(one => one.id === last)?.date ?? DATE })),
+            .map(chat => ({ ...chat, newest: Math.max(...rows.filter(one => one.conversation === chat.id).map(one => one.id)) }))
+            .sort((a, b) => b.newest - a.newest)
+            .map(({ newest, ...chat }) => {
+              const last = rows.find(one => one.id === newest)
+
+              return {
+                ...chat,
+                date: last?.date ?? DATE,
+                members: (chat.people ?? '').split(', ').filter(Boolean).length,
+                last: last?.text ?? null,
+                lastBody: last?.text === null || last?.text === undefined ? (last?.body ?? null) : null,
+                lastFromMe: last?.fromMe ?? null,
+              }
+            }),
         )
       case 'top': {
         let stamp = '0'

@@ -1,18 +1,26 @@
 {
   "name": "instantnotes",
-  "version": "0.1.0",
-  "description": "Your InstantNotes in a pane beside Claude Code: search, read a note as Markdown, and capture a new one with /note.",
-  "author": { "name": "jamubc" },
+  "version": "0.2.0",
+  "description": "Your InstantNotes in a pane beside Claude Code: search as you type, read a note as Markdown, write one in the pane or with /note.",
+  "author": {
+    "name": "jamubc"
+  },
   "repository": "https://github.com/jamubc/toolbox",
   "license": "MIT",
-  "keywords": ["mod", "notes", "instantnotes", "pane", "markdown"],
+  "keywords": [
+    "mod",
+    "notes",
+    "instantnotes",
+    "pane",
+    "markdown"
+  ],
   "types": "./types/index.d.ts",
   "userConfig": {
     "binary": {
       "type": "string",
       "title": "InstantNotes binary",
-      "description": "The instantnotes executable, a path or a name on PATH.",
-      "default": "instantnotes"
+      "description": "The instantnotes executable, a path or a name on PATH. Empty finds it: the instantnotes MCP server Claude Code runs, what `claude mcp add instantnotes` wrote, then the app bundle.",
+      "default": ""
     },
     "db": {
       "type": "string",
