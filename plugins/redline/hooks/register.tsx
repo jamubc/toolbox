@@ -11,7 +11,7 @@ import { atom, derive, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { RedlineSession, RedlineUsage } from '../types'
-import { BAND_COLS, PANE_COLS, PANE_ROWS, bandCanvas, fracOf, paneCanvas, tankFrac, usageFrom, type Tanks } from './fuel'
+import { BAND_COLS, BIG, TALL, bandCanvas, fracOf, paneCanvas, paneLayout, tankFrac, usageFrom, type PaneLayout, type Tanks } from './fuel'
 import { LARGE, Needle, SCALE, SMALL, colorFor, gauge, stageFor, type Face } from './gauge'
 import { PS_ARGV, cwdsIn, lsofArgv, sessionOf, sessionsIn } from './sessions'
 
@@ -80,7 +80,8 @@ async function write<K extends keyof Snapshot>($: EngineInterface, key: K, chang
   await put($, key, next)
 }
 
-type View = { requestId: string; face: Face; withFuel: boolean }
+/** `fuel` is the pane's dial layout, or true for the band's; absent, the tach draws alone. */
+type View = { requestId: string; face: Face; fuel?: PaneLayout | true }
 type TankKey = keyof Tanks
 
 const TANK_KEYS = ['fiveHour', 'sevenDay', 'context'] as const
@@ -126,9 +127,9 @@ function drawnTanks(): Tanks {
 
 function cells(view: View): string {
   const reading = { needle: reads, isNapping: working <= 0 && reads < 0.3, isVenting: working >= SCALE, t: tick / FPS }
-  if (!view.withFuel) return gauge(view.face, reading).encode()
+  if (view.fuel === undefined) return gauge(view.face, reading).encode()
   const tanks = drawnTanks()
-  return (view.face.numbers ? paneCanvas(reading, tanks) : bandCanvas(reading, tanks)).encode()
+  return (view.fuel === true ? bandCanvas(reading, tanks) : paneCanvas(reading, tanks, view.fuel)).encode()
 }
 
 function mounted(view: View): void {
@@ -268,7 +269,7 @@ export const register: Register = (on, options) => {
       await $.ui.close({ id: PANE })
       return { text: 'Redline closed.' }
     }
-    const rows = LARGE.rows + 12 + (hasFuel ? PANE_ROWS - LARGE.rows : 0)
+    const rows = LARGE.rows + 12 + (hasFuel ? TALL.rows - LARGE.rows : 0)
     const opened = await $.ui.open({ id: PANE, title: 'Redline', rows })
     await write($, 'isPaneOpen', () => true)
     return { text: opened.isPlaced ? 'Redline opened.' : 'Redline opened; widen the terminal to see it.' }
@@ -299,7 +300,7 @@ export const register: Register = (on, options) => {
     }
     const { Box, Text, Raster } = $.ui.resolve(e)
     const withFuel = hasFuel && e.props.bodyColumns >= BAND_COLS + BAND_WORDS
-    const view: View = { requestId: e.requestId, face: SMALL, withFuel }
+    const view: View = { requestId: e.requestId, face: SMALL, fuel: withFuel ? true : undefined }
     mounted(view)
     return (
       <Box flexDirection="row">
@@ -341,14 +342,15 @@ export const register: Register = (on, options) => {
       return <Box flexDirection="column">{words}{list}</Box>
     }
     const { Raster } = $.ui.resolve(e)
-    const withFuel = hasFuel && e.props.bodyColumns >= PANE_COLS
-    const rasterCols = withFuel ? PANE_COLS : LARGE.cols
-    const view: View = { requestId: e.requestId, face: LARGE, withFuel }
+    // A narrow pane stacks the dials, as many to a row as fit; a resize renders again and remounts.
+    const fuel = hasFuel && e.props.bodyColumns >= BIG.cols ? paneLayout(e.props.bodyColumns) : undefined
+    const view: View = { requestId: e.requestId, face: LARGE, fuel }
     mounted(view)
+    const rasterCols = fuel?.cols ?? LARGE.cols
     return (
       <Box flexDirection="column">
         <Box flexDirection={e.props.bodyColumns >= rasterCols + 24 ? 'row' : 'column'}>
-          <Raster key="gauge" columns={rasterCols} rows={withFuel ? PANE_ROWS : LARGE.rows} cells={cells(view)} />
+          <Raster key="gauge" columns={rasterCols} rows={fuel?.rows ?? LARGE.rows} cells={cells(view)} />
           {words}
         </Box>
         <Text> </Text>

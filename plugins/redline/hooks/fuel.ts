@@ -22,8 +22,24 @@ export const BIG: FuelFace = { cols: 15, rows: 6, big: true }
 
 const GAP = 2
 export const BAND_COLS = SMALL.cols + GAP + 3 * MINI.cols + 2 * GAP
-export const PANE_COLS = Math.max(LARGE.cols, 3 * BIG.cols + 2 * GAP)
-export const PANE_ROWS = LARGE.rows + 1 + BIG.rows
+
+/** How the pane fits the three big dials into `columns`: as many to a row as fit, 1 to 3. */
+export type PaneLayout = { perRow: number; cols: number; rows: number }
+
+export function paneLayout(columns: number): PaneLayout {
+  const perRow = Math.max(1, Math.min(3, Math.floor((columns + GAP) / (BIG.cols + GAP))))
+  const lines = Math.ceil(3 / perRow)
+  return {
+    perRow,
+    cols: Math.max(LARGE.cols, perRow * BIG.cols + (perRow - 1) * GAP),
+    rows: LARGE.rows + lines * (BIG.rows + 1),
+  }
+}
+
+/** The pane at its widest: the three dials in one row under the tach. */
+export const WIDE = paneLayout(Infinity)
+/** The tallest the pane's dash gets: one dial to a row. */
+export const TALL = paneLayout(0)
 
 const FROM = (150 / 180) * Math.PI
 const SWEEP = (120 / 180) * Math.PI
@@ -80,11 +96,17 @@ export function bandCanvas(reading: Reading, tanks: Tanks): Canvas {
   return out.toCanvas()
 }
 
-/** The pane's dash: the tach with the three big dials under it. */
-export function paneCanvas(reading: Reading, tanks: Tanks): Canvas {
-  const out = new Dots(PANE_COLS, PANE_ROWS)
-  out.blit(tachDots(LARGE, reading), 0, 0)
-  dialsFor(BIG, tanks).forEach((panel, i) => out.blit(panel, LARGE.rows + 1, i * (BIG.cols + GAP)))
+/** The pane's dash: the tach with the three big dials under it, `layout.perRow` to a row, centered. */
+export function paneCanvas(reading: Reading, tanks: Tanks, layout: PaneLayout = WIDE): Canvas {
+  const out = new Dots(layout.cols, layout.rows)
+  out.blit(tachDots(LARGE, reading), 0, Math.floor((layout.cols - LARGE.cols) / 2))
+  const rowCols = layout.perRow * BIG.cols + (layout.perRow - 1) * GAP
+  const left = Math.floor((layout.cols - rowCols) / 2)
+  dialsFor(BIG, tanks).forEach((panel, i) => {
+    const line = Math.floor(i / layout.perRow)
+    const slot = i % layout.perRow
+    out.blit(panel, LARGE.rows + 1 + line * (BIG.rows + 1), left + slot * (BIG.cols + GAP))
+  })
   return out.toCanvas()
 }
 

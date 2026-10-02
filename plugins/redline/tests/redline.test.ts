@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import type { Canvas } from '../hooks/canvas'
-import { BAND_COLS, PANE_COLS, PANE_ROWS } from '../hooks/fuel'
+import { BAND_COLS, BIG, TALL, WIDE } from '../hooks/fuel'
 import { LARGE, Needle, SCALE, SMALL, gauge, stageFor } from '../hooks/gauge'
 import { cwdsIn, sessionOf, sessionsIn } from '../hooks/sessions'
 
@@ -271,9 +271,24 @@ describe('fuel', () => {
     await run($)
     const paneUi = await $.ui.mount(pane('terminal'))
     const raster = await paneUi.find({ type: 'Raster', key: 'gauge' } as any)
-    expect(raster?.props.columns).toBe(PANE_COLS)
-    expect(raster?.props.rows).toBe(PANE_ROWS)
+    expect(raster?.props.columns).toBe(WIDE.cols)
+    expect(raster?.props.rows).toBe(WIDE.rows)
     await paneUi.unmount()
+  })
+
+  test('a narrow pane stacks the dials, and resizing back lays them out again', { options: { fuelGauge: true } }, async ($, on) => {
+    await boot($, engine(on))
+    await run($)
+    const sizeAt = async (columns: number) => {
+      const ui = await $.ui.mount(pane('terminal', columns))
+      const r = await ui.find({ type: 'Raster', key: 'gauge' } as any)
+      await ui.unmount()
+      return [r?.props.columns, r?.props.rows]
+    }
+    expect(await sizeAt(34)).toEqual([2 * BIG.cols + 2, LARGE.rows + 2 * (BIG.rows + 1)])
+    expect(await sizeAt(BIG.cols)).toEqual([LARGE.cols, TALL.rows])
+    expect(await sizeAt(80)).toEqual([WIDE.cols, WIDE.rows])
+    expect(await sizeAt(BIG.cols - 1)).toEqual([LARGE.cols, LARGE.rows])
   })
 
   test('off, the band and the pane are the tach alone', async ($, on) => {
@@ -288,16 +303,11 @@ describe('fuel', () => {
     await paneUi.unmount()
   })
 
-  test('a narrow terminal keeps the tach alone', { options: { fuelGauge: true } }, async ($, on) => {
+  test('a narrow band keeps the tach alone', { options: { fuelGauge: true } }, async ($, on) => {
     await boot($, engine(on))
     const above = await $.ui.mount(band('terminal', 70))
     expect((await above.find({ type: 'Raster', key: 'gauge' } as any))?.props.columns).toBe(SMALL.cols)
     await above.unmount()
-
-    await run($)
-    const paneUi = await $.ui.mount(pane('terminal', 40))
-    expect((await paneUi.find({ type: 'Raster', key: 'gauge' } as any))?.props.columns).toBe(LARGE.cols)
-    await paneUi.unmount()
   })
 
   test('a measurement moves the tanks', { options: { fuelGauge: true } }, async ($, on) => {

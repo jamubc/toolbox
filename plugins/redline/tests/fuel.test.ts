@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { Canvas } from '../hooks/canvas'
 import { NEEDLE, RED_C, SMALL, DIAL_DIM } from '../hooks/gauge'
-import { BIG, BAND_COLS, MINI, PANE_COLS, PANE_ROWS, bandCanvas, fracOf, fuelDial, paneCanvas, tankFrac, usageFrom } from '../hooks/fuel'
+import { BIG, BAND_COLS, MINI, TALL, WIDE, bandCanvas, fracOf, fuelDial, paneCanvas, paneLayout, tankFrac, usageFrom } from '../hooks/fuel'
 
 const text = (cv: Canvas) => Array.from({ length: cv.rows }, (_, r) => cv.line(r)).join('\n')
 
@@ -93,11 +93,24 @@ describe('the fuel dash', () => {
 
   test('the pane stacks the three big dials under the tach', () => {
     const cv = paneCanvas({ ...reading, needle: 14 }, tanks)
-    expect([cv.rows, cv.cols]).toEqual([PANE_ROWS, PANE_COLS])
+    expect([cv.rows, cv.cols]).toEqual([WIDE.rows, WIDE.cols])
     const s = text(cv)
     expect(s).toContain('CLAUDES')
     expect(s).toContain('5H')
     expect(s).toContain('CTX')
+  })
+
+  test('a narrower pane fits the dials two to a row, then one', () => {
+    expect(paneLayout(WIDE.cols).perRow).toBe(3)
+    expect(paneLayout(WIDE.cols - 1).perRow).toBe(2)
+    expect(paneLayout(2 * BIG.cols + 1).perRow).toBe(1)
+    expect(paneLayout(BIG.cols)).toEqual(TALL)
+    for (const columns of [WIDE.cols, 2 * BIG.cols + 2, BIG.cols]) {
+      const layout = paneLayout(columns)
+      const cv = paneCanvas(reading, tanks, layout)
+      expect([cv.rows, cv.cols]).toEqual([layout.rows, layout.cols])
+      for (const label of ['CLAUDES', '5H', '7D', 'CTX']) expect(text(cv)).toContain(label)
+    }
   })
 
   test('a band without readings still shows the three dim dials', () => {
