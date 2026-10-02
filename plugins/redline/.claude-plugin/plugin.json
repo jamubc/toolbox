@@ -1,7 +1,7 @@
 {
   "name": "redline",
   "version": "1.0.0",
-  "description": "A turbo boost gauge above your prompt: the more of your Claude sessions are working, the higher the needle.",
+  "description": "A tachometer for your Claude sessions: when the needle hits the redline, stop spawning and start finishing.",
   "author": { "name": "jamubc" },
   "repository": "https://github.com/jamubc/toolbox",
   "license": "MIT",

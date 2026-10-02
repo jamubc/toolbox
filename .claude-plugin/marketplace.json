@@ -6,12 +6,12 @@
     {
       "name": "redline",
       "source": "./plugins/redline",
-      "description": "A turbo boost gauge above your prompt: the more of your Claude sessions are working, the higher the needle."
+      "description": "A tachometer for your Claude sessions: when the needle hits the redline, stop spawning and start finishing."
     },
     {
       "name": "channel",
       "source": "./plugins/channel",
-      "description": "Your iMessages in a pane beside Claude Code: read, reply, and get a toast when someone texts you."
+      "description": "Your chats in a pane beside Claude Code: read, reply, and get a toast when someone messages you. iMessage today, more chat apps to come."
     }
   ]
 }

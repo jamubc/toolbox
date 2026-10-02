@@ -1,44 +1,61 @@
 # channel
 
-Your iMessages in a pane beside Claude Code. Read your conversations, reply from a text box, and get a toast when someone texts you, without leaving the terminal. macOS only.
+Your favourite chat, directly in Claude Code. Read, reply, get notified and more, without leaving the terminal.
+
+***It can all be done, inside Claude Code***
+
+## Install
+
+Add the marketplace:
 
 ```
 /plugin marketplace add jamubc/toolbox
+```
+
+Install the plugin:
+
+```
 /plugin install channel@toolbox
 ```
 
-## Use
+## Usage
 
-| | |
-|---|---|
-| `/channel` | Opens a pane with your nine most recent conversations. Press `1` to `9` to open one. |
-| In a conversation | Its latest messages with time and sender, and a reply box: type and press Enter to send. `‹ chats` goes back. |
-| New messages | A toast for each message you aren't looking at, e.g. *Book club · +1 555 0103: chapter 4 tonight?*, and *iMessage 3 new* under the prompt. Your own messages never toast. |
+| Command | What it does |
+| --- | --- |
+| `/channel` | Opens a pane with your nine most recent conversations. |
 
-## Setup
+## Supported connections
 
-- **Full Disk Access** for the app running Claude Code (System Settings › Privacy & Security › Full Disk Access), so it can read `~/Library/Messages/chat.db`. Without it the pane says what to grant.
-- **Automation**: on your first send, macOS asks to let your terminal control Messages.
-- **The Claude Code CLI.** It runs commands on your Mac, which the desktop app doesn't allow plugins to do.
+| Connection | Platform | Setup | Provider |
+| --- | --- | --- | --- |
+| [iMessage](#imessage) | macOS | Full Disk Access | `hooks/providers/imessage.ts` |
 
-Conversations show phone numbers and emails, or a group's name; contact names aren't read yet.
+<details>
+<summary>Setup details</summary>
 
-## How it works
+### iMessage
 
-Every 3 seconds with the pane open (10 when closed) it reads new rows from the Messages database with `sqlite3 -readonly`. Most messages on macOS 14 and later keep their text in an archived `attributedBody` field, which it decodes. Replies go through the Messages app with `osascript`, the text passed as an argument and never inside the script.
+- **Reading** uses `sqlite3 -readonly` on `~/Library/Messages/chat.db`, which requires Full Disk Access for your terminal. Grant it in **System Settings › Privacy & Security › Full Disk Access**.
+- **Replying** uses `osascript`. On your first reply, macOS asks you to let your terminal control Messages.
 
-- Messages never reach the model: no prompt, no transcript row, no tool.
-- Nothing sends without your Enter.
-- Message text stays in the plugin's memory: not in session state other plugins can read, not on disk.
-- No network requests at all, and it can start only `/usr/bin/sqlite3` and `/usr/bin/osascript`.
+</details>
 
-`hooks/register.tsx` draws the pane and polls; `hooks/providers/imessage.ts` is the iMessage provider behind the contract in `hooks/providers/chat.ts`.
+<details>
+<summary>Functions</summary>
 
-## Development
+<br>
 
-```sh
-claude --plugin-dir plugins/channel     # load it; edits hot-reload
-claude plugin validate plugins/channel
-claude plugin test plugins/channel
-tsc -p plugins/channel                  # after one load writes .claude-plugin/types/
-```
+- `hooks/register.tsx` draws the pane and polls for new messages.
+- `hooks/providers/chat.ts` defines the contract every provider implements.
+
+</details>
+
+<details>
+<summary>Privacy</summary>
+
+- Messages never reach Claude: no prompt, no transcript row, no tool.
+- Nothing is sent without your explicit approval.
+- Message text stays in the plugin's memory (work in progress).
+- Neither Claude nor the plugin makes network requests.
+
+</details>

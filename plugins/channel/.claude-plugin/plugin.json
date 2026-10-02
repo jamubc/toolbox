@@ -1,7 +1,7 @@
 {
   "name": "channel",
   "version": "0.2.0",
-  "description": "Your iMessages in a pane beside Claude Code: read, reply, and get a toast when someone texts you.",
+  "description": "Your chats in a pane beside Claude Code: read, reply, and get a toast when someone messages you. iMessage today, more chat apps to come.",
   "author": { "name": "jamubc" },
   "repository": "https://github.com/jamubc/toolbox",
   "license": "MIT",
