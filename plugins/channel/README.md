@@ -32,7 +32,7 @@ Every 3 seconds with the pane open (10 when closed) it reads new rows from the M
 - Message text stays in the plugin's memory: not in session state other plugins can read, not on disk.
 - No network requests at all, and it can start only `/usr/bin/sqlite3` and `/usr/bin/osascript`.
 
-`hooks/register.tsx` draws the pane and polls; `hooks/providers/imessage.ts` is the iMessage provider behind the contract in `hooks/providers/chat.ts`. `notes/` holds parked Slack and Discord providers, not loaded.
+`hooks/register.tsx` draws the pane and polls; `hooks/providers/imessage.ts` is the iMessage provider behind the contract in `hooks/providers/chat.ts`.
 
 ## Development
 
