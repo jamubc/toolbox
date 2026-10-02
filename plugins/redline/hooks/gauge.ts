@@ -1,18 +1,22 @@
-// A turbo boost gauge drawn in braille: each cell is a 2 × 4 grid of roughly square dots, so the
-// arcs stay round and the needle thin. The needle reads how many Claude sessions are working.
+// A turbo boost gauge drawn in braille: the needle reads how many Claude sessions are working.
+// The dial wears a dim housing, the redline zone is painted on thicker, and the needle tapers
+// from a ringed hub. Built from the dial library; the fuel dials in `fuel.ts` use it too.
 
-import { Canvas } from './canvas'
+import type { Canvas } from './canvas'
+import { arc, at, dial } from './dial'
+import { Dots } from './dots'
 
 export const SCALE = 25 // the needle pins here
 const AMBER = 13
 const RED = 18
 
-const DIAL = 0x6c6c6c
-const TICK = 0xd0d0d0
-const AMBER_C = 0xffaf00
-const RED_C = 0xff3b30
-const NEEDLE = 0xff875f
-const HUB = 0xeeeeee
+export const DIAL = 0x6c6c6c
+export const DIAL_DIM = 0x4a4a4a
+export const TICK = 0xd0d0d0
+export const AMBER_C = 0xffaf00
+export const RED_C = 0xff3b30
+export const NEEDLE = 0xff875f
+export const HUB = 0xeeeeee
 const STEAM = 0xc7c7cc
 const SNORE = 0x9aa5b1
 
@@ -40,67 +44,33 @@ const zoneColor = (value: number) => (value >= RED ? RED_C : value >= AMBER ? AM
 
 /**
  * A damped spring: it swings to a new count with a little overshoot, trembles more the higher it
- * reads, and past the top presses against the pin and rattles there.
+ * reads, and past the top presses against the pin and rattles there. `scale` is where the pin
+ * sits and `jitter` how much it trembles; the fuel needles take the same spring without jitter.
  */
 export class Needle {
   value = 0
   private velocity = 0
 
+  constructor(
+    private readonly scale = SCALE,
+    private readonly jitter = 1,
+  ) {}
+
   /** Moves `dt` seconds toward `target`; returns where the needle reads now. */
   step(target: number, dt: number): number {
-    const goal = target >= SCALE ? SCALE + 2 : Math.min(target, SCALE)
+    const goal = target >= this.scale ? this.scale + 2 : Math.min(target, this.scale)
     this.velocity += (18 * (goal - this.value) - 5 * this.velocity) * dt
     this.value += this.velocity * dt
-    if (this.value > SCALE) {
-      this.value = SCALE
+    if (this.value > this.scale) {
+      this.value = this.scale
       this.velocity = -Math.abs(this.velocity) * 0.6
     }
     if (this.value < 0) {
       this.value = 0
       this.velocity = Math.abs(this.velocity) * 0.3
     }
-    const tremble = (Math.max(0, Math.min(target, SCALE) - 6) / (SCALE - 6)) * 0.5
-    return Math.max(0, Math.min(SCALE, this.value + (Math.random() * 2 - 1) * tremble))
-  }
-}
-
-const BIT = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]] as const // braille dot bits by [row][column]
-
-/** Braille dots; a cell takes the color of the highest-ranked dot drawn in it. */
-class Dots {
-  readonly bits: Uint8Array
-  readonly color: Int32Array
-  readonly rank: Int8Array
-
-  constructor(readonly cols: number, readonly rows: number) {
-    this.bits = new Uint8Array(cols * rows)
-    this.color = new Int32Array(cols * rows)
-    this.rank = new Int8Array(cols * rows).fill(-1)
-  }
-
-  dot(x: number, y: number, color: number, rank: number): void {
-    const [px, py] = [Math.round(x), Math.round(y)]
-    const [c, r] = [Math.floor(px / 2), Math.floor(py / 4)]
-    if (px < 0 || py < 0 || c >= this.cols || r >= this.rows) return
-    const i = r * this.cols + c
-    this.bits[i]! |= BIT[py % 4]![px % 2]!
-    if (rank >= this.rank[i]!) {
-      this.rank[i] = rank
-      this.color[i] = color
-    }
-  }
-
-  line(x0: number, y0: number, x1: number, y1: number, color: number, rank: number): void {
-    const n = Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)) * 1.5) || 1
-    for (let i = 0; i <= n; i++) this.dot(x0 + ((x1 - x0) * i) / n, y0 + ((y1 - y0) * i) / n, color, rank)
-  }
-
-  toCanvas(): Canvas {
-    const cv = new Canvas(this.rows, this.cols)
-    for (let i = 0; i < this.bits.length; i++) {
-      if (this.bits[i]) cv.put(Math.floor(i / this.cols), i % this.cols, String.fromCharCode(0x2800 + this.bits[i]!), this.color[i]!)
-    }
-    return cv
+    const tremble = (Math.max(0, Math.min(target, this.scale) - 6) / (this.scale - 6)) * 0.5 * this.jitter
+    return Math.max(0, Math.min(this.scale, this.value + (Math.random() * 2 - 1) * tremble))
   }
 }
 
@@ -122,60 +92,56 @@ export const SMALL: Face = { cols: 11 + 5, rows: 4, cx: 11, cy: 9, r: 9, from: (
 /** In the pane: 270°, numbered. */
 export const LARGE: Face = { cols: 24 + 6, rows: 11, cx: 24, cy: 22, r: 21, from: 1.25 * Math.PI, sweep: 1.5 * Math.PI, numbers: true, lane: 6 }
 
-const angleOf = (face: Face, value: number) => face.from - (Math.max(0, Math.min(SCALE, value)) / SCALE) * face.sweep
-const at = (face: Face, angle: number, r: number): [number, number] => [face.cx + r * Math.cos(angle), face.cy - r * Math.sin(angle)]
-
 export type Reading = { needle: number; isNapping: boolean; isVenting: boolean; t: number }
 
-export function gauge(face: Face, reading: Reading): Canvas {
+/** The tach alone, as dots, for composing with the fuel dials. */
+export function tachDots(face: Face, reading: Reading): Dots {
   const dots = new Dots(face.cols, face.rows)
-  const { r } = face
+  const zone = (t: number) => zoneColor(t * SCALE)
 
-  for (let i = 0, n = Math.ceil(face.sweep * r * 1.6); i <= n; i++) {
-    const v = (i / n) * SCALE
-    const [x, y] = at(face, angleOf(face, v), r)
-    dots.dot(x, y, v >= RED ? RED_C : v >= AMBER ? AMBER_C : DIAL, 1)
-  }
-  for (let v = 0; v <= SCALE; v++) {
-    const isMajor = v % 5 === 0
-    if (!isMajor && !face.numbers) continue
-    const a = angleOf(face, v)
-    const [x0, y0] = at(face, a, r - 1)
-    const [x1, y1] = at(face, a, r - (isMajor ? (face.numbers ? 4 : 3) : 2))
-    dots.line(x0, y0, x1, y1, zoneColor(v), 2)
-  }
-
-  const a = angleOf(face, reading.needle)
-  const tip = at(face, a, r - (face.numbers ? 5 : 3))
-  const tail = at(face, a + Math.PI, face.numbers ? 3 : 1.5)
-  dots.line(tail[0], tail[1], tip[0], tip[1], reading.needle >= RED ? RED_C : NEEDLE, 3)
-  for (const [dx, dy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]] as const) dots.dot(face.cx + dx, face.cy + dy, HUB, 4)
-
-  const cv = dots.toCanvas()
+  if (face.numbers) arc(dots, face, { colorAt: () => DIAL_DIM, radius: face.r + 2, rank: 0 })
+  dial(dots, {
+    dial: face,
+    arc: { colorAt: zone, widthAt: t => (t * SCALE >= RED ? 1 : 0) },
+    ticks: face.numbers
+      ? { count: SCALE, majorEvery: 5, length: 2, majorLength: 5, rank: 2, colorAt: zone }
+      : { count: 5, majorEvery: 1, length: 3, majorLength: 3, colorAt: zone },
+    needle: {
+      t: reading.needle / SCALE,
+      color: reading.needle >= RED ? RED_C : NEEDLE,
+      inner: face.numbers ? 5 : 3,
+      tail: face.numbers ? 3 : 1.5,
+      width: face.numbers ? 1.6 : 1.1,
+      hub: face.numbers ? { color: HUB, ringRadius: 3, ringColor: DIAL } : { color: HUB },
+    },
+  })
 
   if (face.numbers) {
     for (const v of [0, 5, 10, 15, 20, 25]) {
-      const [x, y] = at(face, angleOf(face, v), r - 9)
+      const [x, y] = at(face, v / SCALE, face.r - 9)
       const s = String(v)
-      cv.put(Math.round(y / 4), Math.round(x / 2 - (s.length - 1) / 2), s, zoneColor(v))
+      dots.text(Math.round(y / 4), Math.round(x / 2 - (s.length - 1) / 2), s, zoneColor(v))
     }
-    const label = 'CLAUDES'
-    cv.put(face.rows - 1, Math.round(face.cx / 2 - label.length / 2), label, DIAL)
+    dots.text(face.rows - 1, Math.round(face.cx / 2 - 7 / 2), 'CLAUDES', DIAL)
   }
 
   const lane = face.cols - face.lane
   if (reading.isNapping) {
     const k = Math.floor(reading.t * 2) % 8
     const snore = ['z', 'z', 'Z', 'Z']
-    for (let i = 0; i < Math.min(k, 4); i++) cv.put(face.rows - 1 - i, lane + 1 + i, snore[i]!, SNORE)
+    for (let i = 0; i < Math.min(k, 4); i++) dots.text(face.rows - 1 - i, lane + 1 + i, snore[i]!, SNORE)
   }
   if (reading.isVenting) {
     for (let i = 0; i < 3; i++) {
       const u = (reading.t * 1.7 + i / 3) % 1
       const row = Math.round((face.rows - 1) * (1 - u))
       const col = lane + 1 + Math.round(u * (face.lane - 2))
-      cv.put(row, col, u < 0.4 ? '▓' : u < 0.7 ? '▒' : '░', STEAM)
+      dots.text(row, col, u < 0.4 ? '▓' : u < 0.7 ? '▒' : '░', STEAM)
     }
   }
-  return cv
+  return dots
+}
+
+export function gauge(face: Face, reading: Reading): Canvas {
+  return tachDots(face, reading).toCanvas()
 }

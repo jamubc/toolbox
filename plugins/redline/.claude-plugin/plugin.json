@@ -10,8 +10,14 @@
   "userConfig": {
     "statusLine": {
       "type": "boolean",
-      "title": "Status line",
-      "description": "Also show the stage and count on the status line, e.g. \"Idling · 1/7\".",
+      "title": "Show the count at the bottom of the terminal",
+      "description": "The status line is the thin bar along the bottom of your terminal. true puts the stage and your session count there, e.g. \"Idling · 1/7\". false leaves the bottom alone; the gauge above your prompt says the same thing either way.",
+      "default": false
+    },
+    "fuelGauge": {
+      "type": "boolean",
+      "title": "Show the fuel gauges",
+      "description": "true adds three small dials beside the tachometer: 5H and 7D for your plan's five-hour and weekly rate-limit windows, and CTX for this session's context. Each needle travels from F (full) to E (empty) as its tank is used, with a red reserve at the E end. The plan dials need a subscription; CTX works for everyone. A dial with no reading stays dim. false keeps the tachometer alone.",
       "default": false
     }
   }

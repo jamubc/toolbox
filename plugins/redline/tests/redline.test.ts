@@ -3,6 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import type { Canvas } from '../hooks/canvas'
+import { BAND_COLS, PANE_COLS, PANE_ROWS } from '../hooks/fuel'
 import { LARGE, Needle, SCALE, SMALL, gauge, stageFor } from '../hooks/gauge'
 import { cwdsIn, sessionOf, sessionsIn } from '../hooks/sessions'
 
@@ -28,6 +29,16 @@ const SH = `70001\n${PS}70001 15621 ttys010  ps -x -o pid=,ppid=,tty=,args=\n`
 
 const text = (cv: Canvas) => Array.from({ length: cv.rows }, (_, r) => cv.line(r)).join('\n')
 
+// What `$.session.usage()` answers: the status line's figures, itemized.
+const USAGE = {
+  startedAt: 0,
+  context: { window: 200000, tokens: 84000, percent: 42 },
+  rateLimits: [
+    { kind: 'five_hour', percentUsed: 42, resetsAt: '2026-10-02T20:00:00.000Z' },
+    { kind: 'seven_day', percentUsed: 71 },
+  ],
+}
+
 /** Stubs the engine beneath the mod. Call before the test's first use of `$`. */
 function engine(on: On, statuses: (string | undefined)[] = []) {
   const clock = mock.clock(on)
@@ -35,6 +46,8 @@ function engine(on: On, statuses: (string | undefined)[] = []) {
     const stdout = e.argv[0] === 'ps' ? PS : e.argv[0] === 'lsof' ? LSOF : e.argv[0] === 'sh' ? SH : ''
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
+  on('session.usage', () => ({ value: USAGE }))
+  on('session.measure', ($, e) => ({ changed: e.changed }))
   on('ui.status', ($, e) => {
     statuses.push(e.text)
     return { value: undefined }
@@ -57,21 +70,21 @@ async function boot($: Engine, clock: ReturnType<typeof mock.clock>) {
 const run = ($: Engine, args = '') =>
   $.command.run({ command: 'redline', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } } as any)
 
-const band = (surface: 'terminal' | 'desktop') =>
+const band = (surface: 'terminal' | 'desktop', bodyColumns = 120) =>
   ({
     plugin: 'redline',
     surface,
     component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns, scroll: { offset: 0, bodyRows: 10 }, view: {} },
   }) as any
 
-const pane = (surface: 'terminal' | 'desktop') =>
+const pane = (surface: 'terminal' | 'desktop', bodyColumns = 80) =>
   ({
     plugin: 'redline',
     surface,
     component: 'Pane',
     requestId: 'redline',
-    props: { title: 'Redline', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
+    props: { title: 'Redline', isFocused: false, bodyColumns, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
   }) as any
 
 describe('census', () => {
@@ -139,7 +152,7 @@ describe('gauge', () => {
  * the mark, every read answers "never written" until the plugin writes that key again; through
  * `next`, so the drawing that read the key is still redrawn when it is written.
  */
-function clearSession(on: On) {
+function clearSession(on: On, writes: any[] = []) {
   let isCleared = false
   const written = new Set<string>()
   on('state.get', async (_$, e, next) => {
@@ -148,6 +161,7 @@ function clearSession(on: On) {
   })
   on('state.set', (_$, e, next) => {
     if (isCleared) written.add(e.key)
+    writes.push(e)
     return next(e)
   })
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
@@ -238,5 +252,83 @@ describe('mod', () => {
     await above.unmount()
 
     expect((await run($)).text).toMatch(/closed/)
+  })
+})
+
+describe('fuel', () => {
+  const measured = {
+    context: { window: 200000, tokens: 110000, percent: 55 },
+    rateLimits: [{ kind: 'five_hour', percentUsed: 63, resetsAt: '2026-10-02T21:00:00.000Z' }],
+    changed: ['rateLimits'],
+  } as any
+
+  test('the option adds the dials to the band and the pane', { options: { fuelGauge: true } }, async ($, on) => {
+    await boot($, engine(on))
+    const above = await $.ui.mount(band('terminal'))
+    expect((await above.find({ type: 'Raster', key: 'gauge' } as any))?.props.columns).toBe(BAND_COLS)
+    await above.unmount()
+
+    await run($)
+    const paneUi = await $.ui.mount(pane('terminal'))
+    const raster = await paneUi.find({ type: 'Raster', key: 'gauge' } as any)
+    expect(raster?.props.columns).toBe(PANE_COLS)
+    expect(raster?.props.rows).toBe(PANE_ROWS)
+    await paneUi.unmount()
+  })
+
+  test('off, the band and the pane are the tach alone', async ($, on) => {
+    await boot($, engine(on))
+    const above = await $.ui.mount(band('terminal'))
+    expect((await above.find({ type: 'Raster', key: 'gauge' } as any))?.props.columns).toBe(SMALL.cols)
+    await above.unmount()
+
+    await run($)
+    const paneUi = await $.ui.mount(pane('terminal'))
+    expect((await paneUi.find({ type: 'Raster', key: 'gauge' } as any))?.props.columns).toBe(LARGE.cols)
+    await paneUi.unmount()
+  })
+
+  test('a narrow terminal keeps the tach alone', { options: { fuelGauge: true } }, async ($, on) => {
+    await boot($, engine(on))
+    const above = await $.ui.mount(band('terminal', 70))
+    expect((await above.find({ type: 'Raster', key: 'gauge' } as any))?.props.columns).toBe(SMALL.cols)
+    await above.unmount()
+
+    await run($)
+    const paneUi = await $.ui.mount(pane('terminal', 40))
+    expect((await paneUi.find({ type: 'Raster', key: 'gauge' } as any))?.props.columns).toBe(LARGE.cols)
+    await paneUi.unmount()
+  })
+
+  test('a measurement moves the tanks', { options: { fuelGauge: true } }, async ($, on) => {
+    const clock = engine(on)
+    const writes: any[] = []
+    on('state.set', ($, e, next) => {
+      writes.push(e)
+      return next(e)
+    })
+    await boot($, clock)
+    await $.session.measure(measured)
+    const last = writes.filter(w => w.key === 'usage').at(-1)
+    expect(last?.value).toEqual({
+      fiveHour: { percent: 63, resetsAt: Date.parse('2026-10-02T21:00:00.000Z') },
+      sevenDay: null,
+      context: 55,
+    })
+  })
+
+  test('after /clear the tanks keep their last reading', { options: { fuelGauge: true } }, async ($, on) => {
+    const writes: any[] = []
+    const clear = clearSession(on, writes)
+    const clock = engine(on)
+    await boot($, clock)
+    await $.session.measure(measured)
+    await clear($)
+    const last = writes.filter(w => w.key === 'usage').at(-1)
+    expect(last?.value).toEqual({
+      fiveHour: { percent: 63, resetsAt: Date.parse('2026-10-02T21:00:00.000Z') },
+      sevenDay: null,
+      context: 55,
+    })
   })
 })
