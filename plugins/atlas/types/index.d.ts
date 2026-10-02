@@ -9,10 +9,21 @@ export type Entry = {
 
 /** What the source viewer shows for the selected file. */
 export type Preview =
-  | { kind: 'text'; text: string; isCut: boolean }
+  | { kind: 'text'; text: string; isCut: boolean; startLine: number }
+  | { kind: 'markdown'; text: string; isCut: boolean }
+  | { kind: 'image'; path: string }
   | { kind: 'binary' }
   | { kind: 'large' }
   | { kind: 'unreadable'; reason: string }
+
+/** How a file stands against git: changed, added, untracked, deleted, renamed. */
+export type GitMark = 'M' | 'A' | '?' | 'D' | 'R'
+
+/** One search hit: a file by name, or a line in a file by its text. */
+export type Hit = { path: string; line?: number; text?: string }
+
+/** Which search runs: file names, or text inside files. */
+export type SearchMode = 'names' | 'text'
 
 /** The Properties panel: the selected entry, read when it was selected. */
 export type Details = {
@@ -41,11 +52,18 @@ declare module 'claude-code' {
       selected: string | null
       details: Details | null
       query: string
+      mode: SearchMode
       /** Search hits under the root, or null while the tree shows. */
-      results: string[] | null
+      results: Hit[] | null
       naming: Naming | null
       notice: string | null
       editing: Editing | null
+      /** Whether files whose name starts with a dot are drawn. */
+      showHidden: boolean
+      /** What git says about files under the root, by absolute path. */
+      git: Record<string, GitMark>
+      /** Whether this terminal draws real pixels, for picture previews. */
+      hasPixels: boolean
     }
   }
 }

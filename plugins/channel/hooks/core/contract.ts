@@ -7,7 +7,9 @@ import type { ProcessRunResult } from 'claude-code'
 export type Ref = { service: string; conversation: string }
 
 // `at` is the conversation's latest activity, milliseconds since the epoch.
-export type Conversation = { id: string; name: string; at: number }
+// `preview` is its latest message as one line, when the service has it cheaply;
+// `members` how many people are in it, when known.
+export type Conversation = { id: string; name: string; at: number; preview?: string; members?: number }
 
 export type Person = { id: string; name: string; isMe: boolean }
 

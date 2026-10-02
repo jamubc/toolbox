@@ -13,12 +13,12 @@
     {
       "name": "channel",
       "source": "./plugins/channel",
-      "description": "Your chats in a pane beside Claude Code: read, reply, and get a toast when someone messages you. iMessage today, more chat apps to come."
+      "description": "Your chats in a pane beside Claude Code: read, reply, see pictures inline, page back through history, and get a toast when someone messages you. iMessage today, more chat apps to come."
     },
     {
       "name": "instantnotes",
       "source": "./plugins/instantnotes",
-      "description": "Your InstantNotes in a pane beside Claude Code: search, read a note as Markdown, and capture a new one with /note."
+      "description": "Your InstantNotes in a pane beside Claude Code: search as you type, read a note as Markdown, write one in the pane or with /note."
     },
     {
       "name": "browse",
@@ -28,7 +28,7 @@
     {
       "name": "atlas",
       "source": "./plugins/atlas",
-      "description": "Adds /atlas: a file explorer in a pane beside Claude Code. Open a file to edit it in micro."
+      "description": "Adds /atlas: a file explorer in a pane beside Claude Code, with git marks, search by name or text, and micro to edit a file."
     },
     {
       "name": "orbit",

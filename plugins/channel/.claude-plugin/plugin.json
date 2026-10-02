@@ -1,6 +1,6 @@
 {
   "name": "channel",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Your chats in a pane beside Claude Code: read, reply, and get a toast when someone messages you. iMessage today, more chat apps to come.",
   "author": {
     "name": "jamubc"
@@ -20,6 +20,18 @@
       "title": "iMessage",
       "description": "Show your iMessage conversations (macOS 13 or later, terminal only)",
       "default": true
+    },
+    "pictures": {
+      "type": "string",
+      "title": "Pictures",
+      "description": "auto: real pixels in kitty and Ghostty, colored blocks elsewhere. image or blocks forces one; off shows files only.",
+      "options": [
+        "auto",
+        "image",
+        "blocks",
+        "off"
+      ],
+      "default": "auto"
     }
   }
 }

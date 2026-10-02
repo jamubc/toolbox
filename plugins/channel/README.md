@@ -24,13 +24,14 @@ Install the plugin:
 
 | Command | What it does |
 | --- | --- |
-| `/channel` | Opens the chat pane: a tab per service, and your nine most recent conversations in each. |
+| `/channel` | Opens the chat pane: a tab per service, and your twenty most recent conversations in each. |
 
 In the pane:
 
 - **Tabs** switch between services. With two or more set up, an `All` tab shows every conversation together.
-- **A conversation** shows text, files, the message a reply answers, reactions, and edited or unsent messages.
-- **Pictures** preview inline in the terminal: as real pixels in kitty and Ghostty, as colored blocks elsewhere. Press the file name to open it full size.
+- **The list** shows each conversation with a colored avatar chip, when it last moved, how many people are in it, and its newest message. Unread chats are marked and counted; keys `1` to `9` open the first nine.
+- **A conversation** shows messages under the day they came, each person in their own color (you in cyan), with files, the message a reply answers, reactions, and edited or unsent messages. **↑ older** pages back through the history; **↓ latest** returns to the end.
+- **Pictures** (and the first page of a PDF) preview inline in the terminal: as real pixels in kitty and Ghostty, as colored blocks elsewhere. A terminal that turns out not to draw pixels falls back to blocks by itself. `/config` → Pictures forces one, or turns previews off.
 - **→ Claude** on a file puts its path in your Claude prompt, ready for you to send. **copy path** copies it, and pressing the file name opens it with your Mac's own app.
 - **attach** sends a file: pick one this Claude session touched, type a path, or drag a file onto the field.
 - **Claude's reply** puts Claude's last answer in the reply box for you to edit and send.
@@ -68,7 +69,7 @@ A service can start only the programs and call only the hosts listed here. Anyth
 | --- | --- | --- |
 | iMessage | `/usr/bin/sqlite3`, `/usr/bin/osascript` | none |
 
-The pane itself starts `/usr/bin/open` when you press a file, and `/usr/bin/sips` to make a picture's preview. Previews are at most twelve temporary files in your `TMPDIR`, each overwritten in turn.
+The pane itself starts `/usr/bin/open` when you press a file, and `/usr/bin/sips` to make a picture's or a PDF's preview. Previews are at most twelve temporary files in your `TMPDIR`, each overwritten in turn. The cells of a preview are averaged from the pixels they cover and encoded once per size, so redrawing the pane costs nothing more.
 
 </details>
 
@@ -80,7 +81,7 @@ The pane itself starts `/usr/bin/open` when you press a file, and `/usr/bin/sips
 - `hooks/core/contract.ts` is what every service implements: a small required core, plus optional capabilities (attachments, threads, reactions, edits, read state, typing, members, search). The pane offers only what a service has.
 - `hooks/core/registry.ts` lists the services. Adding one is a folder under `hooks/providers/` and a line there.
 - `hooks/core/account.ts` runs one service with its own loop and backoff; `inbox.ts` merges them; `notify.ts` decides what toasts; `hub.ts` ties them together.
-- `hooks/ui/` draws the pane. `hooks/register.tsx` is wiring only.
+- `hooks/ui/` draws the pane: `list.tsx` the conversations, `conversation.tsx` one chat, `picture.ts` thumbnails as pixels or cells, `format.ts` labels, colors and days. `hooks/register.tsx` is wiring only.
 - `tests/kit/` has a scriptable fake service and the conformance checks every provider must pass.
 
 </details>

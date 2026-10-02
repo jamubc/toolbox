@@ -15,7 +15,7 @@ const OSASCRIPT = '/usr/bin/osascript'
 const APPLE_EPOCH_MS = 978_307_200_000
 const PAGE = 50
 const SINCE_LIMIT = 200
-const CONVERSATIONS = 9
+const CONVERSATIONS = 20
 // Tapback kinds 0 to 5, as Messages numbers them.
 const TAPBACKS = ['❤️', '👍', '👎', '😂', '‼️', '❓']
 
@@ -256,14 +256,23 @@ export const imessage: ProviderSpec = {
 
     return {
       async conversations() {
-        const rows = await ask<{ id: number; guid: string; name: string | null; people: string | null; ident: string; date: number }>(
-          Q.conversations(CONVERSATIONS),
-        )
+        const rows = await ask<{
+          id: number; guid: string; name: string | null; people: string | null; ident: string; date: number
+          last: string | null; lastBody: string | null; lastFromMe: number | null; members: number | null
+        }>(Q.conversations(CONVERSATIONS))
 
         return rows.map((row): Conversation => {
           chatGuids.set(String(row.id), row.guid)
+          const text = (row.last ?? (row.lastBody ? attributedText(row.lastBody) : null) ?? '').replace(/\uFFFC/g, '').trim()
+          const preview = text ? (row.lastFromMe === 1 ? `You: ${text}` : text) : undefined
 
-          return { id: String(row.id), name: row.name || row.people || row.ident, at: toMs(row.date) }
+          return {
+            id: String(row.id),
+            name: row.name || row.people || row.ident,
+            at: toMs(row.date),
+            preview,
+            members: row.members === null ? undefined : row.members + 1,
+          }
         })
       },
 
