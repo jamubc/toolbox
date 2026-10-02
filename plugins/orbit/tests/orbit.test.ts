@@ -365,6 +365,57 @@ const pane = (surface: 'terminal' | 'desktop') =>
     viewport: { columns: 160, rows: 48, isFullscreen: true },
   }) as any
 
+/**
+ * What /clear does to a plugin: the session ends and a new one begins in the same process, so the
+ * host's `$.state` reads as never written while the module, its pane and its timers live on. From
+ * the mark, every read answers "never written" until the plugin writes that key again; through
+ * `next`, so the drawing that read the key is still redrawn when it is written.
+ */
+function clearSession(on: On) {
+  let isCleared = false
+  const written = new Set<string>()
+  on('state.get', async (_$, e, next) => {
+    const got = await next(e)
+    return (isCleared && !written.has(e.key) ? { value: { value: undefined, version: 0 } } : got) as never
+  })
+  on('state.set', (_$, e, next) => {
+    if (isCleared) written.add(e.key)
+    return next(e)
+  })
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+  return async ($: Engine) => {
+    await ($ as any).session.end({ reason: 'clear', sessionId: 'before', resume: { id: 'before' } })
+    isCleared = true
+    written.clear()
+  }
+}
+
+describe('after /clear', () => {
+  test('the trace, the home point and the rules stay in the pane, and /orbit still closes it', async ($, on) => {
+    const clear = clearSession(on)
+    const clock = engine(on)
+    await boot($, clock)
+    expect((await run($, 'home 49.28,-123.12 Vancouver')).text).toContain('Home set')
+    expect((await run($, 'block example.com')).text).toContain('Blocking host:example.com')
+    const ran = await $.tool.call({ tool: 'WebFetch', url: 'https://api.example.com/x', prompt: 'read' } as any)
+    expect(ran.deny).toContain('orbit blocked')
+    expect((await run($)).text).toBe('Orbit opened.')
+
+    await clear($)
+    const ui = await $.ui.mount(pane('terminal'))
+    expect(await ui.find({ type: 'Button', text: /api\.example\.com/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Vancouver/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /1 blocked/ })).toBeDefined()
+    await ui.unmount()
+    await clock.advance(1)
+
+    // Still blocking, still open: /orbit closes rather than opening a second time.
+    const again = await $.tool.call({ tool: 'WebFetch', url: 'https://api.example.com/y', prompt: 'read' } as any)
+    expect(again.deny).toContain('orbit blocked')
+    expect((await run($)).text).toBe('Orbit closed.')
+  })
+})
+
 describe('mod', () => {
   test('opens the pane with /orbit and draws the globe and the trace', async ($, on) => {
     const clock = engine(on)

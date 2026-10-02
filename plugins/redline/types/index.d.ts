@@ -7,6 +7,8 @@ declare module 'claude-code' {
       /** A count shown instead of the live one (`/redline 12`); null follows the sessions. */
       preview: number | null
       isPaneOpen: boolean
+      /** True once this session's values are written; false after a /clear empties them. */
+      seeded: boolean
     }
   }
 }

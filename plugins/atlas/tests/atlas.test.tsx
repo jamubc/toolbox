@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { classOf, copyName, foldersBetween, literalPattern, nameProblem, relative, rows } from '../hooks/files'
@@ -206,6 +207,88 @@ describe('the explorer', () => {
     expect(await ui.find({ key: `n:src/util.ts` })).toBeDefined()
     expect(await ui.find({ text: 'src/util.ts' })).toBeDefined()
     await ui.unmount()
+  })
+})
+
+/**
+ * What /clear does to a plugin: the session ends and a new one begins in the same process, so the
+ * host's `$.state` reads as never written while the module and its pane live on. From the mark,
+ * every read answers "never written" until the plugin writes that key again.
+ */
+function clearSession(on: On) {
+  let isCleared = false
+  const written = new Set<string>()
+  // Through `next`, so the drawing that read the key is still redrawn when it is written.
+  on('state.get', async (_$, e, next) => {
+    const got = await next(e)
+    return (isCleared && !written.has(e.key) ? { value: { value: undefined, version: 0 } } : got) as never
+  })
+  on('state.set', (_$, e, next) => {
+    if (isCleared) written.add(e.key)
+    return next(e)
+  })
+  return async ($: Engine) => {
+    await ($ as any).session.end({ reason: 'clear', sessionId: 'before', resume: { id: 'before' } })
+    isCleared = true
+    written.clear()
+  }
+}
+
+describe('after /clear', () => {
+  test('the pane keeps its root, open folders and selection, and reading works again', async ($, on) => {
+    const clear = clearSession(on)
+    const clock = mock.clock(on)
+    fakeWorld(on)
+    on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+    await start($)
+    const ui = await $.ui.mount({ plugin: 'atlas', surface: 'terminal', ...pane(120) })
+    await ui.press({ key: 'n:src' })
+    await ui.press({ key: 'n:src/main.ts' })
+    await ui.unmount()
+
+    await clear($)
+    const after = await $.ui.mount({ plugin: 'atlas', surface: 'terminal', ...pane(120) })
+    // Drawn from what the module kept: not an empty tree under an empty root.
+    expect((await after.find({ key: 'n:src/main.ts' }))?.text).toBe('main.ts')
+    expect(await after.find({ text: /^\/work$/ })).toBeDefined()
+    expect(await after.find({ text: /Cannot read/ })).toBeUndefined()
+    // The render asked for the host's state back; the timer it set writes it.
+    await clock.advance(1)
+
+    // Refresh lists the root again, never the empty path that /clear left behind.
+    await after.press({ key: 'refresh' })
+    expect(await after.find({ text: /Cannot read/ })).toBeUndefined()
+    expect(await after.find({ key: 'n:README.md' })).toBeDefined()
+    expect((await after.find({ type: 'Code' }))?.props).toMatchObject({ path: `${ROOT}/src/main.ts` })
+
+    // And a change made after the clear builds on what was kept.
+    await after.press({ key: 'n:src' })
+    expect(await after.find({ key: 'n:src/main.ts' })).toBeUndefined()
+    await after.press({ key: 'n:src' })
+    expect(await after.find({ key: 'n:src/main.ts' })).toBeDefined()
+    await after.unmount()
+  })
+
+  test('the editor stays open through a clear, and /atlas finds the same root', async ($, on) => {
+    const clear = clearSession(on)
+    const world = fakeWorld(on)
+    on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+    await start($)
+    const ui = await $.ui.mount({ plugin: 'atlas', surface: 'terminal', ...pane(80) })
+    await ui.press({ key: 'n:README.md' })
+    await ui.press({ key: 'edit' })
+    await until(ui, () => world.spawned.length > 0)
+    await ui.unmount()
+
+    await clear($)
+    const after = await $.ui.mount({ plugin: 'atlas', surface: 'terminal', ...pane(80) })
+    expect(await after.find({ type: 'Raster', key: 'editor' })).toBeDefined()
+    await after.key({ key: 'x' })
+    expect(world.calls.at(-1)).toEqual({ route: '/key', body: { kind: 'key', key: 'x' } })
+    await after.unmount()
+
+    expect((await $.command.run({ command: 'atlas', args: '', ...RUN })).text).toBe('Atlas opened on /work.')
+    expect(world.spawned.length).toBe(1)
   })
 })
 

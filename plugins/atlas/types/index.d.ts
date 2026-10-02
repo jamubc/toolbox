@@ -46,6 +46,8 @@ declare module 'claude-code' {
       naming: Naming | null
       notice: string | null
       editing: Editing | null
+      /** True once this session's values are written; false after a /clear empties them. */
+      seeded: boolean
     }
   }
 }

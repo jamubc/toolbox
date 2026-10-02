@@ -16,6 +16,8 @@ declare module 'claude-code' {
       hits: Hit[]
       note: OpenNote | null
       error: string | null
+      /** True once this session's values are written; false after a /clear empties them. */
+      seeded: boolean
     }
   }
 }

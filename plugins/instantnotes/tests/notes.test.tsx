@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 const NOTE = {
@@ -89,4 +90,53 @@ test('/note captures text as a new note', { options: { db: '/tmp/lib.db' } }, as
   expect(ran.text).toBe('Saved note "Buy milk".')
   expect(calls.map(c => c.name)).toEqual(['create_note'])
   expect(calls[0]?.args).toEqual({ body: 'Buy milk' })
+})
+
+/**
+ * What /clear does to a plugin: the session ends and a new one begins in the same process, so the
+ * host's `$.state` reads as never written while the module and its pane live on. From the mark,
+ * every read answers "never written" until the plugin writes that key again; through `next`, so
+ * the drawing that read the key is still redrawn when it is written.
+ */
+function clearSession(on: On) {
+  let isCleared = false
+  const written = new Set<string>()
+  on('state.get', async (_$, e, next) => {
+    const got = await next(e)
+    return (isCleared && !written.has(e.key) ? { value: { value: undefined, version: 0 } } : got) as never
+  })
+  on('state.set', (_$, e, next) => {
+    if (isCleared) written.add(e.key)
+    return next(e)
+  })
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  return async ($: Engine) => {
+    await ($ as any).session.end({ reason: 'clear', sessionId: 'before', resume: { id: 'before' } })
+    isCleared = true
+    written.clear()
+  }
+}
+
+test('after /clear the open note and the search stay in the pane', { options: { db: '/tmp/lib.db' } }, async ($, on) => {
+  const calls: { name: string; args: any; argv: readonly string[] }[] = []
+  const clear = clearSession(on)
+  const clock = mock.clock(on)
+  fakeServer(on, calls)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'instantnotes', surface: 'terminal', ...PANE })
+  await ui.input({ key: 'query', text: 'CachyOS/Arch' })
+  await ui.press({ key: `hit-${NOTE.id}` })
+  expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe(NOTE.body)
+  await ui.unmount()
+
+  await clear($)
+  const after = await $.ui.mount({ plugin: 'instantnotes', surface: 'terminal', ...PANE })
+  expect((await after.find({ type: 'Markdown' }))?.props.text).toBe(NOTE.body)
+  await clock.advance(1)
+  await after.press({ key: 'back' })
+  expect(await after.find({ type: 'Markdown' })).toBeUndefined()
+  expect((await after.find({ key: 'query' }))?.props).toMatchObject({ value: 'CachyOS/Arch' })
+  expect((await after.find({ key: `hit-${NOTE.id}` }))?.text).toContain(NOTE.title)
+  await after.unmount()
 })

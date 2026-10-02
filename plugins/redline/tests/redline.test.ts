@@ -97,8 +97,8 @@ describe('gauge', () => {
   test('names each stage from where it starts', async () => {
     const names = [0, 1, 2, 3, 6, 9, 12, 13, 17, 18, 21, 24, 25, 99].map(n => stageFor(n).name)
     expect(names).toEqual([
-      'Napping', 'Idling', 'Idling', 'Cruising', 'Spooling up', 'Boost building', 'Boost building',
-      'Under pressure…', 'Under pressure…', 'Redline', 'Overboost', 'Overboost', 'Blown', 'Blown',
+      'Napping', 'Idling', 'Idling', 'Cruising', 'Busy', 'Very Busy', 'Very Busy',
+      'Under Pressure', 'Under Pressure', 'Redline', 'Overboost', 'Overboost', 'Blown', 'Blown',
     ])
   })
 
@@ -130,6 +130,57 @@ describe('gauge', () => {
     for (let i = 0; i < 100; i++) highest = Math.max(highest, needle.step(40, 0.1))
     expect(highest).toBeLessThanOrEqual(SCALE)
     expect(needle.value).toBeGreaterThan(SCALE - 3) // pressed against the pin
+  })
+})
+
+/**
+ * What /clear does to a plugin: the session ends and a new one begins in the same process, so the
+ * host's `$.state` reads as never written while the module, its pane and its timers live on. From
+ * the mark, every read answers "never written" until the plugin writes that key again; through
+ * `next`, so the drawing that read the key is still redrawn when it is written.
+ */
+function clearSession(on: On) {
+  let isCleared = false
+  const written = new Set<string>()
+  on('state.get', async (_$, e, next) => {
+    const got = await next(e)
+    return (isCleared && !written.has(e.key) ? { value: { value: undefined, version: 0 } } : got) as never
+  })
+  on('state.set', (_$, e, next) => {
+    if (isCleared) written.add(e.key)
+    return next(e)
+  })
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+  return async ($: Engine) => {
+    await ($ as any).session.end({ reason: 'clear', sessionId: 'before', resume: { id: 'before' } })
+    isCleared = true
+    written.clear()
+  }
+}
+
+describe('after /clear', () => {
+  test('the pane stays open, the sessions stay counted, and /redline still closes it', { options: { statusLine: true } }, async ($, on) => {
+    const clear = clearSession(on)
+    const statuses: (string | undefined)[] = []
+    const clock = engine(on, statuses)
+    await boot($, clock)
+    expect((await run($, '12')).text).toMatch(/Very Busy/)
+    expect((await run($)).text).toMatch(/opened/)
+
+    await clear($)
+    const ui = await $.ui.mount(pane('terminal'))
+    expect(await ui.find({ type: 'Text', text: /Very Busy \(preview\)/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /1 working · 5 sessions/ })).toBeDefined()
+    await ui.unmount()
+    const above = await $.ui.mount(band('terminal'))
+    expect(await above.find({ type: 'Raster', key: 'gauge' } as any)).toBeUndefined() // the pane is still open
+    await above.unmount()
+    await clock.advance(1)
+
+    // The next poll finds the same sessions: the pane is still open, so /redline closes it.
+    await clock.advance(2000)
+    expect((await run($)).text).toMatch(/closed/)
+    expect(statuses.at(-1)).toBe('Very Busy · preview')
   })
 })
 

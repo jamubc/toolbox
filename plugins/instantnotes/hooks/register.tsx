@@ -1,4 +1,4 @@
-import { atom, read, update } from 'claude-code'
+import { atom, derive, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Hit, OpenNote } from '../types'
@@ -11,6 +11,60 @@ const query = atom({ plugin: 'instantnotes', key: 'query' } as const, '')
 const hits = atom({ plugin: 'instantnotes', key: 'hits' } as const, [])
 const note = atom({ plugin: 'instantnotes', key: 'note' } as const, null)
 const error = atom({ plugin: 'instantnotes', key: 'error' } as const, null)
+const seeded = atom({ plugin: 'instantnotes', key: 'seeded' } as const, false)
+
+// /clear ends the session but not the process: the host's `$.state` starts over empty while this
+// module and its pane live on, so read straight from the host the search and the open note are
+// suddenly gone. `seeded` is false exactly then, and before the first `session.start`. `snapshot` is
+// what the pane draws from, read in one go: the host's while `seeded`, else what this process
+// last saw; `write` puts the kept values back before the first change after a /clear, and a
+// render that finds `seeded` false schedules that.
+type Snapshot = { query: string; hits: Hit[]; note: OpenNote | null; error: string | null }
+const KEYS = ['query', 'hits', 'note', 'error'] as const
+let kept: Snapshot = { query: '', hits: [], note: null, error: null }
+let wasLive: boolean | null = null // what the last read saw; null before the first
+const snapshot = derive([seeded, query, hits, note, error], (isLive, query, hits, note, error): Snapshot => {
+  wasLive = isLive
+  if (!isLive) return kept
+  kept = { query, hits, note, error }
+  return kept
+})
+
+/** The one place the atoms are written: each key to its own, as the validator asks. */
+async function put<K extends keyof Snapshot>($: EngineInterface, key: K, value: Snapshot[K]): Promise<void> {
+  switch (key) {
+    case 'query': await update($, query, () => value as Snapshot['query']); break
+    case 'hits': await update($, hits, () => value as Snapshot['hits']); break
+    case 'note': await update($, note, () => value as Snapshot['note']); break
+    case 'error': await update($, error, () => value as Snapshot['error']); break
+  }
+}
+
+/** After a /clear (or at the first start), writes what this process kept back to the host. */
+let reseeding: Promise<void> | null = null
+function reseed($: EngineInterface): Promise<void> {
+  reseeding ??= (async () => {
+    try {
+      if (await read($, seeded)) return
+      for (const key of KEYS) await put($, key, kept[key])
+      await update($, seeded, () => true)
+      wasLive = true
+    } finally {
+      reseeding = null
+    }
+  })()
+  return reseeding
+}
+
+/** Changes one value from what `snapshot` reads, and keeps it here too. */
+async function write<K extends keyof Snapshot>($: EngineInterface, key: K, change: (now: Snapshot[K]) => Snapshot[K]): Promise<void> {
+  // `kept` is current once a read has seen the host live: only this module writes these values.
+  if (wasLive === null) await read($, snapshot)
+  if (!wasLive) await reseed($)
+  const next = change(kept[key])
+  kept = { ...kept, [key]: next }
+  await put($, key, next)
+}
 
 type Options = { binary?: string; db?: string }
 
@@ -71,18 +125,18 @@ async function callTool(
 }
 
 async function search($: EngineInterface, options: Options, text: string) {
-  await update($, query, () => text)
-  await update($, note, () => null)
+  await write($, 'query', () => text)
+  await write($, 'note', () => null)
   try {
     const found: Hit[] = text.trim()
       ? (await callTool($, options, 'search_notes', { query: text, limit: LIST_LIMIT })).results
       : (await callTool($, options, 'list_notes', { limit: LIST_LIMIT })).notes.map(
           (n: any) => ({ id: n.id, title: n.title, excerpt: n.snippet, spaces: [] }),
         )
-    await update($, hits, () => found)
-    await update($, error, () => null)
+    await write($, 'hits', () => found)
+    await write($, 'error', () => null)
   } catch (err) {
-    await update($, error, () => String((err as Error).message))
+    await write($, 'error', () => String((err as Error).message))
   }
 }
 
@@ -97,10 +151,10 @@ async function openNote($: EngineInterface, options: Options, id: string) {
       spaces: view.spaces,
       updatedAt: view.updatedAt,
     }
-    await update($, note, () => opened)
-    await update($, error, () => null)
+    await write($, 'note', () => opened)
+    await write($, 'error', () => null)
   } catch (err) {
-    await update($, error, () => String((err as Error).message))
+    await write($, 'error', () => String((err as Error).message))
   }
 }
 
@@ -118,8 +172,17 @@ export const register: Register = (on, options: Options) => {
       name: 'note',
       description: 'Capture a note to InstantNotes (/note <text>)',
     })
+    await reseed($)
 
     return next(e)
+  })
+
+  // /clear: the pane stays up, so what it shows is written back as soon as the host's state is
+  // the new session's (now, or from the next event if that comes later).
+  on('session.end', async ($, e, next) => {
+    const result = await next(e)
+    if (e.reason === 'clear') await reseed($).catch(() => {})
+    return result
   })
 
   on('command.run', { command: 'notes' }, async ($, e) => {
@@ -146,8 +209,9 @@ export const register: Register = (on, options: Options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Markdown, Text } = $.ui.resolve(e)
-    const failed = await read($, error)
-    const opened = await read($, note)
+    // Drawn from what this process kept after a /clear; the host gets it back off the render.
+    if (!(await read($, seeded))) $.clock.after(0, () => void reseed($).catch(() => {}))
+    const { error: failed, note: opened, hits: list, query: text } = await read($, snapshot)
 
     if (opened !== null) {
       const meta = [
@@ -158,7 +222,7 @@ export const register: Register = (on, options: Options) => {
       return (
         <Box flexDirection="column">
           <Box>
-            <Button key="back" label="Back" hotkey="b" onPress={() => update($, note, () => null)} />
+            <Button key="back" label="Back" hotkey="b" onPress={() => write($, 'note', () => null)} />
             <Text> </Text>
             <Button
               key="ask"
@@ -178,9 +242,6 @@ export const register: Register = (on, options: Options) => {
         </Box>
       )
     }
-
-    const list = await read($, hits)
-    const text = await read($, query)
 
     // Mobile draws no Input; there the search comes from /notes <words>.
     let field

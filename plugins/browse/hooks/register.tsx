@@ -3,10 +3,10 @@
 // (half-block cells, any terminal) or an Image (real pixels, kitty and
 // Ghostty), and forwards clicks, keys and the wheel to it over its socket.
 
-import { atom, read, update } from 'claude-code'
+import { atom, derive, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Renderer } from '../types'
+import type { Page, Renderer, Status } from '../types'
 import { toUrl } from './address'
 
 const PANE = 'browse'
@@ -29,6 +29,60 @@ const status = atom({ plugin: 'browse', key: 'status' } as const, 'idle')
 const message = atom({ plugin: 'browse', key: 'message' } as const, null)
 const page = atom({ plugin: 'browse', key: 'page' } as const, { url: '', title: '' })
 const renderer = atom({ plugin: 'browse', key: 'renderer' } as const, 'cells')
+const seeded = atom({ plugin: 'browse', key: 'seeded' } as const, false)
+
+// /clear ends the session but not the process: the host's `$.state` starts over empty while this
+// module, its pane and Chrome live on, so read straight from the host the browser is suddenly
+// `idle` with no page. `seeded` is false exactly then, and before the first `session.start`.
+// `snapshot` is what the pane draws from, read in one go: the host's while `seeded`, else what this
+// process last saw; `write` puts the kept values back before the first change after a /clear,
+// and a render that finds `seeded` false schedules that.
+type Snapshot = { status: Status; message: string | null; page: Page; renderer: Renderer }
+const KEYS = ['status', 'message', 'page', 'renderer'] as const
+let kept: Snapshot = { status: 'idle', message: null, page: { url: '', title: '' }, renderer: 'cells' }
+let wasLive: boolean | null = null // what the last read saw; null before the first
+const snapshot = derive([seeded, status, message, page, renderer], (isLive, status, message, page, renderer): Snapshot => {
+  wasLive = isLive
+  if (!isLive) return kept
+  kept = { status, message, page, renderer }
+  return kept
+})
+
+/** The one place the atoms are written: each key to its own, as the validator asks. */
+async function put<K extends keyof Snapshot>($: EngineInterface, key: K, value: Snapshot[K]): Promise<void> {
+  switch (key) {
+    case 'status': await update($, status, () => value as Snapshot['status']); break
+    case 'message': await update($, message, () => value as Snapshot['message']); break
+    case 'page': await update($, page, () => value as Snapshot['page']); break
+    case 'renderer': await update($, renderer, () => value as Snapshot['renderer']); break
+  }
+}
+
+/** After a /clear (or at the first start), writes what this process kept back to the host. */
+let reseeding: Promise<void> | null = null
+function reseed($: EngineInterface): Promise<void> {
+  reseeding ??= (async () => {
+    try {
+      if (await read($, seeded)) return
+      for (const key of KEYS) await put($, key, kept[key])
+      await update($, seeded, () => true)
+      wasLive = true
+    } finally {
+      reseeding = null
+    }
+  })()
+  return reseeding
+}
+
+/** Changes one value from what `snapshot` reads, and keeps it here too. */
+async function write<K extends keyof Snapshot>($: EngineInterface, key: K, change: (now: Snapshot[K]) => Snapshot[K]): Promise<void> {
+  // `kept` is current once a read has seen the host live: only this module writes these values.
+  if (wasLive === null) await read($, snapshot)
+  if (!wasLive) await reseed($)
+  const next = change(kept[key])
+  kept = { ...kept, [key]: next }
+  await put($, key, next)
+}
 
 type Options = { renderer?: string; chrome?: string; node?: string }
 
@@ -107,10 +161,10 @@ async function call($: EngineInterface, path: string, body: object = {}): Promis
       try {
         reason = JSON.parse(res.text).error ?? reason
       } catch {}
-      await update($, message, () => reason)
+      await write($, 'message', () => reason)
     }
   } catch (err) {
-    await update($, message, () => (err as Error).message)
+    await write($, 'message', () => (err as Error).message)
   }
 }
 
@@ -143,7 +197,7 @@ async function show($: EngineInterface, next: Frame): Promise<void> {
   imageDenies += 1
   if (imageDenies >= DENIES_BEFORE_FALLBACK) {
     imageDenies = 0
-    await update($, renderer, () => 'cells')
+    await write($, 'renderer', () => 'cells')
     $.ui.toast('This terminal cannot show the page as pixels here; drawing it in colored blocks instead.')
   }
 }
@@ -151,11 +205,11 @@ async function show($: EngineInterface, next: Frame): Promise<void> {
 async function onLine($: EngineInterface, self: Helper, out: any): Promise<string | null> {
   if (out.type === 'ready') {
     self.socket = out.socket
-    await update($, status, () => 'ready')
+    await write($, 'status', () => 'ready')
     await syncView($)
   } else if (out.type === 'page') {
-    await update($, page, () => ({ url: out.url, title: out.title }))
-    await update($, message, () => null)
+    await write($, 'page', () => ({ url: out.url, title: out.title }))
+    await write($, 'message', () => null)
   } else if (out.type === 'cells' || out.type === 'image') {
     await show($, out)
   } else if (out.type === 'error') {
@@ -192,8 +246,8 @@ function startHelper($: EngineInterface, options: Options): Promise<string> {
   frame = null
 
   void (async () => {
-    await update($, status, () => 'starting')
-    await update($, message, () => null)
+    await write($, 'status', () => 'starting')
+    await write($, 'message', () => null)
     let failure: string | null = null
     let stderr = ''
     let pending = ''
@@ -226,8 +280,8 @@ function startHelper($: EngineInterface, options: Options): Promise<string> {
     }
     failed(new Error(failure ?? 'the browser stopped'))
     if (isStopping) return
-    await update($, status, () => 'error')
-    await update($, message, () => failure ?? `The browser stopped unexpectedly. ${stderr.trim()}`.trim())
+    await write($, 'status', () => 'error')
+    await write($, 'message', () => failure ?? `The browser stopped unexpectedly. ${stderr.trim()}`.trim())
   })().catch(() => {}) // the module unloaded under the loop: nothing left to tell
 
   return self.ready
@@ -240,7 +294,7 @@ async function stopHelper($: EngineInterface): Promise<void> {
   helper = null
   sent = null
   frame = null
-  await update($, status, () => 'idle')
+  await write($, 'status', () => 'idle')
 }
 
 /** The plugin's own close: its `$.ui.close` never reaches its own `ui.close` hook. */
@@ -272,7 +326,7 @@ async function open($: EngineInterface, options: Options, args: string) {
   const opened = await $.ui.open({ id: PANE, title: 'Browse', focus: true, rows: 30, columns: 100 })
   void go($, options, url) // with no address, Chrome starts now and the start page asks where to
   const where = url ?? 'the browser'
-  const looks = (await read($, renderer)) === 'cells' ? ' Drawn in colored blocks here; kitty or Ghostty show real pixels.' : ''
+  const looks = ((await read($, snapshot)).renderer) === 'cells' ? ' Drawn in colored blocks here; kitty or Ghostty show real pixels.' : ''
   return {
     text: opened.isPlaced
       ? `Opening ${where}.${looks}`
@@ -283,15 +337,27 @@ async function open($: EngineInterface, options: Options, args: string) {
 export const register: Register = (on, options: Options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'browse', description: 'Browse the web' })
+    await reseed($)
     const picked = await pickRenderer($, options)
-    await update($, renderer, () => picked)
+    await write($, 'renderer', () => picked)
     // A reload ended the old helper with the old module.
-    await update($, status, () => 'idle')
+    await write($, 'status', () => 'idle')
 
     return next(e)
   })
 
-  on('command.run', { command: 'browse' }, ($, e) => open($, options, e.args))
+  // /clear: Chrome and the pane stay up, so what they show is written back as soon as the host's
+  // state is the new session's (now, or from the next event if that comes later).
+  on('session.end', async ($, e, next) => {
+    const result = await next(e)
+    if (e.reason === 'clear') await reseed($).catch(() => {})
+    return result
+  })
+
+  on('command.run', { command: 'browse' }, async ($, e) => {
+    await reseed($)
+    return open($, options, e.args)
+  })
 
   on('ui.close', async ($, e, next) => {
     const result = await next(e)
@@ -333,10 +399,9 @@ export const register: Register = (on, options: Options) => {
       )
     }
     const { Box, Button, Client, Image, Input, Raster, Text } = $.ui.resolve(e)
-    const now = await read($, status)
-    const why = await read($, message)
-    const shown = await read($, page)
-    const drawAs = await read($, renderer)
+    // Drawn from what this process kept after a /clear; the host gets it back off the render.
+    if (!(await read($, seeded))) $.clock.after(0, () => void reseed($).catch(() => {}))
+    const { status: now, message: why, page: shown, renderer: drawAs } = await read($, snapshot)
     const columns = e.props.bodyColumns
     const rows = e.props.scroll.bodyRows - HEADER_ROWS
     // No page yet: Chrome's blank page draws near-black, so the pane shows a

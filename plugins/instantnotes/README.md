@@ -47,6 +47,7 @@ Install the plugin:
 
 - `hooks/register.tsx` draws the pane and answers `/notes` and `/note`.
 - Each action runs `instantnotes mcp` once and asks it one question, so the plugin follows the same rules as any agent.
+- `/clear` and `/compact` leave the search and the open note in the pane.
 
 </details>
 

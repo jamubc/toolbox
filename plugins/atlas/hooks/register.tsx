@@ -4,7 +4,7 @@
 // editor/term.py hosts the editor in a pseudo-terminal and streams its screen
 // as Raster cells; a Client over the picture forwards keys and the pointer.
 
-import { atom, read, update } from 'claude-code'
+import { atom, derive, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderSurface } from 'claude-code'
 
 import type { Details, Editing, Entry, Naming, Preview } from '../types'
@@ -33,6 +33,82 @@ const results = atom({ plugin: 'atlas', key: 'results' } as const, null)
 const naming = atom({ plugin: 'atlas', key: 'naming' } as const, null)
 const notice = atom({ plugin: 'atlas', key: 'notice' } as const, null)
 const editing = atom({ plugin: 'atlas', key: 'editing' } as const, null)
+const seeded = atom({ plugin: 'atlas', key: 'seeded' } as const, false)
+
+// /clear ends the session but not the process: the host's `$.state` starts over empty while this
+// module, its pane and the editor live on, so a value read straight from the host is suddenly its
+// initial (an empty root, no listings, nothing being edited). `seeded` is false exactly then, and
+// before the first `session.start`. `snapshot` is every value the pane draws from, read in one go:
+// the host's while `seeded`, else what this process last saw; `write` puts the kept values back
+// before the first change after a /clear, and a render that finds `seeded` false schedules that.
+type Snapshot = {
+  root: string
+  expanded: string[]
+  listings: Record<string, Entry[]>
+  selected: string | null
+  details: Details | null
+  query: string
+  results: string[] | null
+  naming: Naming | null
+  notice: string | null
+  editing: Editing | null
+}
+const KEYS = ['root', 'expanded', 'listings', 'selected', 'details', 'query', 'results', 'naming', 'notice', 'editing'] as const
+let kept: Snapshot = {
+  root: '', expanded: [], listings: {}, selected: null, details: null, query: '', results: null, naming: null, notice: null, editing: null,
+}
+let wasLive: boolean | null = null // what the last read saw; null before the first
+const snapshot = derive(
+  [seeded, root, expanded, listings, selected, details, query, results, naming, notice, editing],
+  (isLive, root, expanded, listings, selected, details, query, results, naming, notice, editing): Snapshot => {
+    wasLive = isLive
+    if (!isLive) return kept
+    kept = { root, expanded, listings, selected, details, query, results, naming, notice, editing }
+    return kept
+  },
+)
+
+/** The one place the atoms are written: each key to its own, as the validator asks. */
+async function put<K extends keyof Snapshot>($: EngineInterface, key: K, value: Snapshot[K]): Promise<void> {
+  switch (key) {
+    case 'root': await update($, root, () => value as Snapshot['root']); break
+    case 'expanded': await update($, expanded, () => value as Snapshot['expanded']); break
+    case 'listings': await update($, listings, () => value as Snapshot['listings']); break
+    case 'selected': await update($, selected, () => value as Snapshot['selected']); break
+    case 'details': await update($, details, () => value as Snapshot['details']); break
+    case 'query': await update($, query, () => value as Snapshot['query']); break
+    case 'results': await update($, results, () => value as Snapshot['results']); break
+    case 'naming': await update($, naming, () => value as Snapshot['naming']); break
+    case 'notice': await update($, notice, () => value as Snapshot['notice']); break
+    case 'editing': await update($, editing, () => value as Snapshot['editing']); break
+  }
+}
+
+/** After a /clear (or at the first start), writes what this process kept back to the host. */
+let reseeding: Promise<void> | null = null
+function reseed($: EngineInterface): Promise<void> {
+  reseeding ??= (async () => {
+    try {
+      if (await read($, seeded)) return
+      for (const key of KEYS) await put($, key, kept[key])
+      await update($, seeded, () => true)
+      wasLive = true
+    } finally {
+      reseeding = null
+    }
+  })()
+  return reseeding
+}
+
+/** Changes one value from what `snapshot` reads, and keeps it here too. */
+async function write<K extends keyof Snapshot>($: EngineInterface, key: K, change: (now: Snapshot[K]) => Snapshot[K]): Promise<void> {
+  // `kept` is current once a read has seen the host live: only this module writes these values.
+  if (wasLive === null) await read($, snapshot)
+  if (!wasLive) await reseed($)
+  const next = change(kept[key])
+  kept = { ...kept, [key]: next }
+  await put($, key, next)
+}
 
 type Options = { editor?: string; python?: string }
 type Size = { columns: number; rows: number }
@@ -54,7 +130,7 @@ let paneBody: Size = { columns: 100, rows: 30 }
 const blanks = new Map<string, string>()
 
 const reasonOf = (err: unknown) => (err instanceof Error ? err.message : String(err))
-const say = ($: EngineInterface, text: string | null) => update($, notice, () => text)
+const say = ($: EngineInterface, text: string | null) => write($, 'notice', () => text)
 // Every path or name drawn passes through one of these: see `printable`.
 const tilde = (path: string) => printable(home && relative(path, home) !== path ? `~/${relative(path, home)}` : path)
 const nameOf = (path: string) => printable(basename(path))
@@ -79,11 +155,12 @@ function blankCells({ columns, rows: height }: Size): string {
 // ---------------------------------------------------------------- the tree
 
 async function load($: EngineInterface, dir: string): Promise<void> {
+  if (dir === '') return
   try {
     const listed = await $.fs.list(dir)
     const entries = sorted(listed.map(({ name, kind, size: bytes, mtimeMs, isLink }): Entry => (
       { name, kind, size: bytes, mtimeMs, isLink })))
-    await update($, listings, all => ({ ...all, [dir]: entries }))
+    await write($, 'listings', all => ({ ...all, [dir]: entries }))
   } catch (err) {
     await say($, `Cannot read ${tilde(dir)}: ${reasonOf(err)}`)
   }
@@ -109,9 +186,9 @@ async function previewOf($: EngineInterface, path: string, bytes: number): Promi
 }
 
 async function select($: EngineInterface, path: string | null): Promise<void> {
-  await update($, selected, () => path)
+  await write($, 'selected', () => path)
   if (path === null) {
-    await update($, details, () => null)
+    await write($, 'details', () => null)
     return
   }
   try {
@@ -133,54 +210,55 @@ async function select($: EngineInterface, path: string | null): Promise<void> {
       preview: stat.kind === 'file' ? await previewOf($, path, stat.size) : null,
     }
     // A later selection may have landed while this one read.
-    if ((await read($, selected)) === path) await update($, details, () => found)
+    if ((await read($, snapshot)).selected === path) await write($, 'details', () => found)
   } catch (err) {
-    await update($, details, () => null)
+    await write($, 'details', () => null)
     await say($, `Cannot read ${tilde(path)}: ${reasonOf(err)}`)
   }
 }
 
 async function toggle($: EngineInterface, path: string): Promise<void> {
-  if ((await read($, expanded)).includes(path)) {
-    await update($, expanded, list => list.filter(p => p !== path && !p.startsWith(`${path}/`)))
+  if ((await read($, snapshot)).expanded.includes(path)) {
+    await write($, 'expanded', list => list.filter(p => p !== path && !p.startsWith(`${path}/`)))
     return
   }
   await load($, path)
-  await update($, expanded, list => [...list, path])
+  await write($, 'expanded', list => [...list, path])
 }
 
 async function setRoot($: EngineInterface, dir: string): Promise<void> {
-  await update($, root, () => dir)
-  await update($, results, () => null)
+  await write($, 'root', () => dir)
+  await write($, 'results', () => null)
   await load($, dir)
 }
 
 /** Opens every folder down to `path` and selects it. */
 async function reveal($: EngineInterface, path: string): Promise<void> {
-  const base = await read($, root)
+  const base = (await read($, snapshot)).root
   for (const dir of foldersBetween(base, path)) {
     await load($, dir)
-    await update($, expanded, list => (list.includes(dir) ? list : [...list, dir]))
+    await write($, 'expanded', list => (list.includes(dir) ? list : [...list, dir]))
   }
-  await update($, results, () => null)
+  await write($, 'results', () => null)
   await select($, path)
 }
 
 async function refresh($: EngineInterface): Promise<void> {
   await say($, null)
-  await load($, await read($, root))
-  for (const dir of await read($, expanded)) await load($, dir)
-  await select($, await read($, selected))
+  const now = await read($, snapshot)
+  await load($, now.root)
+  for (const dir of now.expanded) await load($, dir)
+  await select($, now.selected)
 }
 
 async function search($: EngineInterface, text: string): Promise<void> {
-  await update($, query, () => text)
+  await write($, 'query', () => text)
   const words = text.trim()
   if (words === '') {
-    await update($, results, () => null)
+    await write($, 'results', () => null)
     return
   }
-  const base = await read($, root)
+  const base = (await read($, snapshot)).root
   try {
     const ran = await $.process.run(
       ['find', base, '-mindepth', '1', '(', '-name', '.git', '-o', '-name', 'node_modules', ')', '-prune', '-o',
@@ -188,7 +266,7 @@ async function search($: EngineInterface, text: string): Promise<void> {
       { timeoutMs: 8000 },
     )
     const hits = ran.stdout.split('\n').filter(Boolean).slice(0, SEARCH_LIMIT)
-    await update($, results, () => hits)
+    await write($, 'results', () => hits)
     await say($, hits.length === 0 ? `Nothing under ${tilde(base)} is named like "${words}".` : null)
   } catch (err) {
     await say($, `Search failed: ${reasonOf(err)}`)
@@ -199,18 +277,17 @@ async function search($: EngineInterface, text: string): Promise<void> {
 
 /** The folder a new entry goes in: the selected folder, else the selected file's. */
 async function folderForNew($: EngineInterface): Promise<string> {
-  const path = await read($, selected)
-  const info = await read($, details)
-  if (path === null) return read($, root)
+  const { selected: path, details: info } = await read($, snapshot)
+  if (path === null) return (await read($, snapshot)).root
   return info?.path === path && info.kind === 'dir' ? path : dirname(path)
 }
 
 async function startNaming($: EngineInterface, action: Naming['action']): Promise<void> {
-  const path = await read($, selected)
+  const path = (await read($, snapshot)).selected
   if (action === 'rename' && path === null) return
   const target = action === 'rename' ? (path as string) : await folderForNew($)
   await say($, null)
-  await update($, naming, () => ({ action, target }))
+  await write($, 'naming', () => ({ action, target }))
   // A click leaves the keys with the prompt: asking for the pane's focus again
   // hands them to the pane, where the name field is drawn autoFocus.
   await openPane($)
@@ -219,7 +296,7 @@ async function startNaming($: EngineInterface, action: Naming['action']): Promis
 const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: 'Atlas', focus: true, columns: 110 })
 
 async function finishNaming($: EngineInterface, typed: string): Promise<void> {
-  const named = await read($, naming)
+  const named = (await read($, snapshot)).naming
   if (named === null) return
   const name = typed.trim()
   const problem = nameProblem(name)
@@ -230,7 +307,7 @@ async function finishNaming($: EngineInterface, typed: string): Promise<void> {
   const dir = named.action === 'rename' ? dirname(named.target) : named.target
   const to = join(dir, name)
   if (named.action === 'rename' && to === named.target) {
-    await update($, naming, () => null)
+    await write($, 'naming', () => null)
     return
   }
   if (await $.fs.exists(to)) {
@@ -252,11 +329,11 @@ async function finishNaming($: EngineInterface, typed: string): Promise<void> {
   }
   if (named.action === 'rename') {
     const from = named.target
-    await update($, expanded, list => list.map(p => (p === from || p.startsWith(`${from}/`) ? to + p.slice(from.length) : p)))
+    await write($, 'expanded', list => list.map(p => (p === from || p.startsWith(`${from}/`) ? to + p.slice(from.length) : p)))
   }
-  await update($, naming, () => null)
-  const base = await read($, root)
-  if (dir !== base) await update($, expanded, list => (list.includes(dir) ? list : [...list, dir]))
+  await write($, 'naming', () => null)
+  const base = (await read($, snapshot)).root
+  if (dir !== base) await write($, 'expanded', list => (list.includes(dir) ? list : [...list, dir]))
   await load($, dir)
   await select($, to)
   await say($, named.action === 'rename' ? `Renamed to ${name}.` : `Created ${name}.`)
@@ -304,7 +381,7 @@ async function trash($: EngineInterface, path: string): Promise<void> {
     await say($, `Could not move ${name} to the Trash: ${ran.stderr.trim() || `exit ${ran.exitCode}`}`)
     return
   }
-  await update($, expanded, list => list.filter(p => p !== path && !p.startsWith(`${path}/`)))
+  await write($, 'expanded', list => list.filter(p => p !== path && !p.startsWith(`${path}/`)))
   await load($, dirname(path))
   await select($, null)
   await say($, `Moved ${name} to the Trash.`)
@@ -356,7 +433,7 @@ async function show($: EngineInterface, next: Frame): Promise<void> {
 }
 
 async function edit($: EngineInterface, options: Options, path: string): Promise<void> {
-  const now = await read($, editing)
+  const now = (await read($, snapshot)).editing
   if (helper !== null && now !== null) {
     $.ui.toast(`Already editing ${nameOf(now.path)}: quit it first (Ctrl+Q).`)
     return
@@ -383,7 +460,7 @@ async function edit($: EngineInterface, options: Options, path: string): Promise
   helper = self
   frame = null
   const starting: Editing = { path, status: 'starting', message: null }
-  await update($, editing, () => starting)
+  await write($, 'editing', () => starting)
   $.ui.toast('Click the text to type. Ctrl+Z would suspend Claude Code: use the Undo button instead.', { timeoutMs: 8000 })
 
   void (async () => {
@@ -409,7 +486,7 @@ async function edit($: EngineInterface, options: Options, path: string): Promise
           }
           if (out.type === 'ready') {
             self.socket = out.socket
-            await update($, editing, (e): Editing | null => (e === null ? e : { ...e, status: 'running' }))
+            await write($, 'editing', (e): Editing | null => (e === null ? e : { ...e, status: 'running' }))
             await syncSize($)
           } else if (out.type === 'cells') {
             await show($, out)
@@ -429,12 +506,12 @@ async function edit($: EngineInterface, options: Options, path: string): Promise
     if (!hasExited) {
       const why = failure ?? (`The editor stopped unexpectedly. ${stderr.trim()}`.trim())
       const failed: Editing = { path, status: 'error', message: why }
-      await update($, editing, () => failed)
+      await write($, 'editing', () => failed)
       return
     }
-    await update($, editing, () => null)
+    await write($, 'editing', () => null)
     await load($, dirname(path))
-    if ((await read($, selected)) === path) await select($, path)
+    if ((await read($, snapshot)).selected === path) await select($, path)
   })().catch(() => {}) // the module unloaded under the loop: nothing left to tell
 }
 
@@ -447,14 +524,24 @@ export const register: Register = (on, options: Options) => {
     cwd = e.cwd
     home = (await $.env.get('HOME')) ?? ''
     await $.command.register({ name: 'atlas', description: 'Explore files in a pane; a file opens in micro (/atlas [path])' })
+    await reseed($)
     // A reload ended the old editor with the old module.
     const closed = 'The editor closed when atlas reloaded. micro keeps a backup of unsaved changes and offers it when you reopen the file.'
-    await update($, editing, (now): Editing | null => (now === null ? now : { ...now, status: 'error', message: closed }))
+    await write($, 'editing', (now): Editing | null => (now === null ? now : { ...now, status: 'error', message: closed }))
 
     return next(e)
   })
 
+  // /clear: the editor and the pane stay up, so what they show is written back as soon as the
+  // host's state is the new session's (now, or from the next event if that comes later).
+  on('session.end', async ($, e, next) => {
+    const result = await next(e)
+    if (e.reason === 'clear') await reseed($).catch(() => {})
+    return result
+  })
+
   on('command.run', { command: 'atlas' }, async ($, e) => {
+    await reseed($)
     const typed = e.args.trim()
     let target: string | null = null
     if (typed !== '') {
@@ -462,22 +549,22 @@ export const register: Register = (on, options: Options) => {
       try {
         const stat = await $.fs.stat(spelled, { resolve: true })
         target = stat.realPath ?? spelled
-        const current = (await read($, root)) || cwd
+        const current = (await read($, snapshot)).root || cwd
         if (stat.kind === 'dir') await setRoot($, target)
         else await setRoot($, target.startsWith(`${current}/`) ? current : dirname(target))
       } catch {
         return { text: `atlas: nothing at ${typed}.` }
       }
-    } else if ((await read($, root)) === '') {
+    } else if ((await read($, snapshot)).root === '') {
       await setRoot($, cwd)
     } else {
-      await load($, await read($, root))
+      await load($, (await read($, snapshot)).root)
     }
     const opened = await openPane($)
-    const base = await read($, root)
+    const base = (await read($, snapshot)).root
     if (target !== null && target !== base) {
       await reveal($, target)
-      const info = await read($, details)
+      const info = (await read($, snapshot)).details
       if (info?.kind === 'file') await edit($, options, target)
     }
     return { text: `Atlas opened on ${tilde(base)}.${opened.isPlaced ? '' : ' Widen the terminal to see the pane.'}` }
@@ -496,8 +583,9 @@ export const register: Register = (on, options: Options) => {
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
     const result = await next(e)
     if (result.deny === undefined && e.element?.startsWith('n:')) {
-      const path = join(await read($, root), e.element.slice(2))
-      if ((await read($, selected)) !== path) void select($, path).catch(() => {})
+      const now = await read($, snapshot)
+      const path = join(now.root, e.element.slice(2))
+      if (now.selected !== path) void select($, path).catch(() => {})
     }
     return result
   })
@@ -523,8 +611,10 @@ export const register: Register = (on, options: Options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Code, Text } = $.ui.resolve(e)
     paneBody = { columns: e.props.bodyColumns, rows: e.props.scroll.bodyRows }
-    const now = await read($, editing)
-    const base = await read($, root)
+    // Drawn from what this process kept after a /clear; the host gets it back off the render.
+    if (!(await read($, seeded))) $.clock.after(0, () => void reseed($).catch(() => {}))
+    const shown = await read($, snapshot)
+    const { editing: now, root: base } = shown
 
     if (now !== null) {
       const rel = relOf(now.path, base)
@@ -533,7 +623,7 @@ export const register: Register = (on, options: Options) => {
         return (
           <Box flexDirection="column">
             <Text color="red">{now.message ?? `${program} draws only in Claude Code's terminal.`}</Text>
-            <Button key="back" variant="primary" label="Back to files" onPress={() => update($, editing, () => null)} />
+            <Button key="back" variant="primary" label="Back to files" onPress={() => write($, 'editing', () => null)} />
           </Box>
         )
       }
@@ -566,13 +656,8 @@ export const register: Register = (on, options: Options) => {
     }
     editorView = null
 
-    const tree = rows(base, await read($, listings), await read($, expanded), TREE_LIMITS)
-    const chosen = await read($, selected)
-    const info = await read($, details)
-    const hits = await read($, results)
-    const named = await read($, naming)
-    const line = await read($, notice)
-    const typed = await read($, query)
+    const tree = rows(base, shown.listings, shown.expanded, TREE_LIMITS)
+    const { selected: chosen, details: info, results: hits, naming: named, notice: line, query: typed } = shown
     const width = e.props.bodyColumns
     const isWide = width >= 90
     const treeWidth = isWide ? Math.min(48, Math.floor(width * 0.42)) : width
@@ -597,7 +682,7 @@ export const register: Register = (on, options: Options) => {
             <Input key="name" label={label} autoFocus value={named.action === 'rename' ? nameOf(named.target) : ''}
               submitLabel={named.action === 'rename' ? 'rename' : 'create'} onSubmit={value => finishNaming($, value)} />
           </Box>
-          <Button key="cancel" plain label="Cancel" onPress={() => update($, naming, () => null)} />
+          <Button key="cancel" plain label="Cancel" onPress={() => write($, 'naming', () => null)} />
         </Box>
       )
     }
@@ -608,7 +693,7 @@ export const register: Register = (on, options: Options) => {
         <Box flexDirection="column">
           <Box flexDirection="row" gap={1}>
             <Text bold>{`${hits.length}${hits.length === SEARCH_LIMIT ? '+' : ''} found`}</Text>
-            <Button key="clear" plain label="Back to the tree" onPress={() => update($, results, () => null)} />
+            <Button key="clear" plain label="Back to the tree" onPress={() => write($, 'results', () => null)} />
           </Box>
           {hits.map(path => (
             <Button key={`r:${relative(path, base)}`} plain label={relOf(path, base)} onPress={() => reveal($, path)} />
