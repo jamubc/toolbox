@@ -29,6 +29,11 @@
       "name": "atlas",
       "source": "./plugins/atlas",
       "description": "Adds /atlas: a file explorer in a pane beside Claude Code, with git marks, search by name or text, and micro to edit a file."
+    },
+    {
+      "name": "orbit",
+      "source": "./plugins/orbit",
+      "description": "A globe of everything your Claude session talks to: tool calls, sockets and bytes traced to hosts, countries and orgs, with a deny-list that blocks before a call runs."
     }
   ]
 }
