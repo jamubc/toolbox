@@ -203,6 +203,75 @@ export function folderMark(dir: string, marks: Readonly<Record<string, GitMark>>
   return found
 }
 
+/**
+ * The marks as the tree draws them, rolled up to the folders holding them.
+ *
+ * `folderMark` answers one folder by walking every mark, and the tree asks it
+ * once per folder row, so a repository with thousands of changed files costs
+ * rows × marks on every redraw. This builds the same answers once: each mark
+ * is offered to the folders above it, deepest first, so a drawing costs
+ * marks × depth to build and one lookup per row after that.
+ *
+ * A mark keeps the same standing `folderMark` gives it: a change or a deletion
+ * anywhere beneath reads as a change, and otherwise the first mark found wins.
+ */
+export type MarkIndex = { byPath: Readonly<Record<string, GitMark>>; byFolder: ReadonlyMap<string, GitMark> }
+
+export function indexMarks(marks: Readonly<Record<string, GitMark>>, root: string): MarkIndex {
+  const byFolder = new Map<string, GitMark>()
+  const under = root === '/' ? '/' : `${root}/`
+  for (const [path, mark] of Object.entries(marks)) {
+    if (path !== root && !path.startsWith(under)) continue
+    // The folders this mark shows on: every folder from the root down to the
+    // mark's own path, which is a folder itself when git reported a directory.
+    const chain = [path]
+    for (let dir = dirname(path); ; dir = dirname(dir)) {
+      chain.push(dir)
+      if (dir === root || dir === '/') break
+    }
+    for (const dir of chain.reverse()) {
+      const was = byFolder.get(dir)
+      // A change or a deletion anywhere beneath reads as a change, whatever
+      // was found first; anything else keeps the first mark that got here.
+      if (mark === 'M' || mark === 'D') {
+        if (was !== 'M') byFolder.set(dir, 'M')
+      } else if (was === undefined) byFolder.set(dir, mark)
+    }
+  }
+  return { byPath: marks, byFolder }
+}
+
+/** The mark a folder row draws, from an index built once for the drawing. */
+export function markFor(index: MarkIndex, dir: string): GitMark | null {
+  return index.byFolder.get(dir) ?? null
+}
+
+/**
+ * Whether a folder now holds what the drawing already has. The watcher asks
+ * this every few seconds for every open folder, and building two JSON strings
+ * to compare them costs far more than reading the fields.
+ */
+export function sameEntries(known: readonly Entry[], fresh: readonly Entry[]): boolean {
+  if (known === fresh) return true
+  if (known.length !== fresh.length) return false
+  for (let i = 0; i < known.length; i += 1) {
+    const was = known[i]!
+    const now = fresh[i]!
+    if (was.name !== now.name || was.kind !== now.kind || was.size !== now.size
+      || was.mtimeMs !== now.mtimeMs || was.isLink !== now.isLink) return false
+  }
+  return true
+}
+
+/** Whether git now says what the tree already draws, without stringifying either. */
+export function sameMarks(known: Readonly<Record<string, GitMark>>, fresh: Readonly<Record<string, GitMark>>): boolean {
+  if (known === fresh) return true
+  const paths = Object.keys(known)
+  if (paths.length !== Object.keys(fresh).length) return false
+  for (const path of paths) if (known[path] !== fresh[path]) return false
+  return true
+}
+
 /** `path:line:text` lines as grep and ripgrep print them, absolute paths only. */
 export function parseGrep(output: string, limit: number): { path: string; line: number; text: string }[] {
   const hits: { path: string; line: number; text: string }[] = []

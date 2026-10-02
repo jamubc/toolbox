@@ -2,7 +2,12 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { classOf, copyName, crumbs, folderMark, foldersBetween, literalPattern, nameProblem, parseGitStatus, parseGrep, relative, rows } from '../hooks/files'
+import type { Entry } from '../types'
+
+import {
+  classOf, copyName, crumbs, folderMark, foldersBetween, indexMarks, literalPattern, markFor, nameProblem,
+  parseGitStatus, parseGrep, relative, rows, sameEntries, sameMarks,
+} from '../hooks/files'
 
 const ROOT = '/work'
 const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } } as const
@@ -90,7 +95,12 @@ function fakeWorld(on: On, surfaces: string[] = ['terminal'], answer = 'Cancel')
       files.delete(last)
     }
     const value = { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
-    if (command === 'find') value.stdout = [...files.keys()].filter(p => p.includes('util')).join('\n')
+    if (command === 'find') {
+      // `-iname` gets `*word*`, escaped; take the word back out.
+      const pattern = String(e.argv[e.argv.indexOf('-iname') + 1] ?? '')
+      const word = pattern.replace(/^\*/, '').replace(/\*$/, '').replace(/\\(.)/g, '$1')
+      value.stdout = [...files.keys()].filter(p => p.includes(word)).join('\n')
+    }
     if (command === 'git') {
       if (world.porcelain === null) return { value: { ...value, exitCode: 128, stderr: 'fatal: not a git repository' } }
       value.stdout = e.argv[3] === 'rev-parse' ? `${ROOT}\n` : world.porcelain
@@ -412,6 +422,20 @@ describe('what git and the folder say', () => {
     await ui.unmount()
   })
 
+  test('the watcher asks git where the repository is once, and status on every tick', async ($, on) => {
+    const clock = mock.clock(on)
+    const world = fakeWorld(on)
+    await start($)
+    const ui = await $.ui.mount({ plugin: 'atlas', surface: 'terminal', ...pane(120) })
+    const git = (verb: string) => world.runs.filter(r => r[0] === 'git' && r[3] === verb).length
+    const before = git('status')
+    await clock.advance(4000)
+    await clock.advance(4000)
+    expect(git('status')).toBeGreaterThan(before) // the watcher is looking
+    expect(git('rev-parse')).toBe(1)
+    await ui.unmount()
+  })
+
   test('outside a repository nothing is marked', async ($, on) => {
     const world = fakeWorld(on)
     world.porcelain = null
@@ -544,5 +568,76 @@ describe('the helpers', () => {
         r.type === 'entry' ? `${r.depth}:${r.entry.name}` : r.type === 'more' ? `${r.depth}:+${r.hidden}` : 'cut')
     expect(shape({ perFolder: 2, rows: 100, characters: 1000 })).toEqual(['0:a', '1:x', '1:y', '1:+1', '0:b.txt'])
     expect(shape({ perFolder: 9, rows: 3, characters: 1000 })).toEqual(['0:a', '1:x', '1:y', 'cut'])
+  })
+
+  test('the mark index a drawing uses answers exactly as asking each folder did', () => {
+    // The index is a rewrite of folderMark for speed, so it has to agree with it
+    // for every folder a tree could draw: over random trees, every mark, and the
+    // root at '/' as well as below it.
+    const KINDS = ['M', 'A', '?', 'D', 'R'] as const
+    let seed = 987654321
+    const at = (n: number) => (seed = (seed * 1103515245 + 12345) % 2147483648) % n
+    const parent = (path: string) => path.slice(0, path.lastIndexOf('/')) || '/'
+    for (let round = 0; round < 4000; round += 1) {
+      const base = at(6) === 0 ? '/' : `/r${at(3)}`
+      const marks: Record<string, (typeof KINDS)[number]> = {}
+      for (let i = 0; i < at(7); i += 1) {
+        let path = base === '/' ? '' : base
+        for (let depth = 1 + at(4); depth > 0; depth -= 1) path += `/x${at(3)}`
+        marks[`${path}${at(2) === 0 ? '' : '.ts'}`] = KINDS[at(KINDS.length)]!
+      }
+      const index = indexMarks(marks, base)
+      // Every folder a tree under `base` could draw, the root included.
+      const drawn = new Set<string>([base])
+      for (const path of Object.keys(marks)) {
+        for (let dir = parent(path); ; dir = parent(dir)) {
+          if (dir === base || dir.startsWith(base === '/' ? '/' : `${base}/`)) drawn.add(dir)
+          if (dir === '/') break
+        }
+      }
+      for (const dir of drawn) {
+        expect({ dir, mark: markFor(index, dir) }).toEqual({ dir, mark: folderMark(dir, marks) })
+      }
+    }
+  })
+
+  test('a change or a deletion beneath a folder wins over anything found first', () => {
+    // The two orderings that matter: an added file listed before a modified one,
+    // and a renamed one before a deleted one.
+    expect(markFor(indexMarks({ '/r/a/new': 'A', '/r/b/gone': 'D' }, '/r'), '/r')).toBe('M')
+    expect(markFor(indexMarks({ '/r/a/moved': 'R', '/r/b/gone': 'D' }, '/r'), '/r')).toBe('M')
+    expect(markFor(indexMarks({ '/r/a/new': 'A' }, '/r'), '/r')).toBe('A')
+    expect(markFor(indexMarks({ '/r/deep/inside/new': '?' }, '/r'), '/r')).toBe('?')
+    // A mark on the root's own path still shows on the root.
+    expect(markFor(indexMarks({ '/': 'A' }, '/'), '/')).toBe('A')
+    expect(markFor(indexMarks({ '/r': 'M' }, '/r'), '/r')).toBe('M')
+    // A folder holding nothing marked shows nothing, whatever lies outside it.
+    expect(markFor(indexMarks({ '/elsewhere/a': 'M' }, '/r'), '/r')).toBeNull()
+    expect(markFor(indexMarks({ '/r/a/x': 'M' }, '/r'), '/r/other')).toBeNull()
+  })
+
+  test('tells a changed listing from the same one without building strings', () => {
+    const entry = (name: string, over: Partial<Entry> = {}): Entry =>
+      ({ name, kind: 'file', size: 1, mtimeMs: 2, isLink: false, ...over })
+    expect(sameEntries([entry('a')], [entry('a')])).toBe(true)
+    expect(sameEntries([], [])).toBe(true)
+    expect(sameEntries([entry('a')], [entry('b')])).toBe(false)
+    expect(sameEntries([entry('a')], [entry('a'), entry('b')])).toBe(false)
+    expect(sameEntries([entry('a'), entry('b')], [entry('a')])).toBe(false)
+    // A file rewritten in place keeps its name and so must not read as unchanged.
+    expect(sameEntries([entry('a', { size: 1 })], [entry('a', { size: 2 })])).toBe(false)
+    expect(sameEntries([entry('a', { mtimeMs: 2 })], [entry('a', { mtimeMs: 3 })])).toBe(false)
+    expect(sameEntries([entry('a', { isLink: false })], [entry('a', { isLink: true })])).toBe(false)
+    expect(sameEntries([entry('a', { kind: 'file' })], [entry('a', { kind: 'dir' })])).toBe(false)
+  })
+
+  test('tells new git marks from the same ones, in either order', () => {
+    expect(sameMarks({}, {})).toBe(true)
+    expect(sameMarks({ '/r/a': 'M' }, { '/r/a': 'M' })).toBe(true)
+    expect(sameMarks({ '/r/a': 'M', '/r/b': '?' }, { '/r/b': '?', '/r/a': 'M' })).toBe(true)
+    expect(sameMarks({ '/r/a': 'M' }, {})).toBe(false)
+    expect(sameMarks({}, { '/r/a': 'M' })).toBe(false)
+    expect(sameMarks({ '/r/a': 'M' }, { '/r/a': 'A' })).toBe(false)
+    expect(sameMarks({ '/r/a': 'M' }, { '/r/b': 'M' })).toBe(false)
   })
 })

@@ -9,8 +9,9 @@ import type { EngineInterface, Register, RenderSurface } from 'claude-code'
 
 import type { Details, Editing, Entry, GitMark, Hit, Naming, Preview, SearchMode } from '../types'
 import {
-  basename, classOf, copyName, crumbs, date, dirname, folderMark, foldersBetween, isHidden, isMarkdown, isPng, join,
-  literalPattern, nameProblem, parseGitStatus, parseGrep, printable, printableSource, relative, rows, size, sorted,
+  basename, classOf, copyName, crumbs, date, dirname, foldersBetween, indexMarks, isHidden, isMarkdown, isPng, join,
+  literalPattern, markFor, nameProblem, parseGitStatus, parseGrep, printable, printableSource, relative, rows, sameEntries, sameMarks,
+  size, sorted,
 } from './files'
 
 const PANE = 'atlas'
@@ -149,6 +150,16 @@ let frame: Frame | null = null
 let editorView: Size | null = null // the editor's picture as last drawn
 let paneBody: Size = { columns: 100, rows: 30 }
 let isWatching = false
+/** Counts searches so a slow earlier one cannot land its hits over a newer query. */
+let searching = 0
+/**
+ * Where git said the repository's top folder is, and the root it was asked
+ * about. `gitTop` is undefined until git has been asked, and null when it
+ * answered that there is no repository; either way it is not asked again for
+ * that root. Going to another root asks afresh.
+ */
+let gitTopFor: string | null = null
+let gitTop: string | null | undefined = undefined
 const blanks = new Map<string, string>()
 
 const reasonOf = (err: unknown) => (err instanceof Error ? err.message : String(err))
@@ -197,7 +208,7 @@ async function load($: EngineInterface, dir: string, isQuiet = false): Promise<b
     const entries = sorted(listed.map(({ name, kind, size: bytes, mtimeMs, isLink }): Entry => (
       { name, kind, size: bytes, mtimeMs, isLink })))
     const known = (await read($, snapshot)).listings[dir]
-    if (known !== undefined && JSON.stringify(known) === JSON.stringify(entries)) return false
+    if (known !== undefined && sameEntries(known, entries)) return false
     await write($, 'listings', all => ({ ...all, [dir]: entries }))
     return true
   } catch (err) {
@@ -206,24 +217,43 @@ async function load($: EngineInterface, dir: string, isQuiet = false): Promise<b
   }
 }
 
-/** What git says about the files under the root; nothing outside a repository. */
+/**
+ * What git says about the files under the root; nothing outside a repository.
+ * A repository's top folder cannot move while the root stays the same, so the
+ * watcher asks git where it is once per root rather than on every tick. `top`
+ * is undefined until git has been asked, and null when git answered that there
+ * is no repository or is not answering at all; neither is asked again for that
+ * root, and going to another root asks afresh.
+ */
 async function loadGit($: EngineInterface, base: string): Promise<boolean> {
   let marks: Record<string, GitMark> = {}
-  try {
-    const top = await $.process.run(['git', '-C', base, 'rev-parse', '--show-toplevel'], { timeoutMs: GIT_TIMEOUT_MS })
-    const repo = top.stdout.trim()
-    if (top.exitCode === 0 && repo !== '') {
+  if (base !== gitTopFor) {
+    gitTopFor = base
+    gitTop = undefined
+  }
+  if (gitTop === undefined) {
+    try {
+      const ran = await $.process.run(['git', '-C', base, 'rev-parse', '--show-toplevel'], { timeoutMs: GIT_TIMEOUT_MS })
+      gitTop = ran.exitCode === 0 ? ran.stdout.trim() : null
+    } catch {
+      gitTop = null // no git on this machine
+    }
+  }
+  if (gitTop !== null) {
+    try {
       const ran = await $.process.run(
         ['git', '-C', base, 'status', '--porcelain=v1', '-z', '--untracked-files=normal', '--', '.'],
         { timeoutMs: GIT_TIMEOUT_MS },
       )
-      if (ran.exitCode === 0 && !ran.isStdoutTruncated) marks = parseGitStatus(ran.stdout, repo)
+      // A status that failed or was cut short says nothing, so the marks stay as they are.
+      if (ran.exitCode === 0 && !ran.isStdoutTruncated) marks = parseGitStatus(ran.stdout, gitTop)
+      else return false
+    } catch {
+      return false
     }
-  } catch {
-    // No git here: the tree shows no marks.
   }
   const known = (await read($, snapshot)).git
-  if (JSON.stringify(known) === JSON.stringify(marks)) return false
+  if (sameMarks(known, marks)) return false
   await write($, 'git', () => marks)
   return true
 }
@@ -329,6 +359,10 @@ async function reveal($: EngineInterface, path: string, line?: number): Promise<
 
 async function refresh($: EngineInterface): Promise<void> {
   await say($, null)
+  // Asked for by hand, so git is asked where the repository is again: the folder
+  // may have become one since the watcher last looked.
+  gitTopFor = null
+  gitTop = undefined
   const base = (await read($, snapshot)).root
   await load($, base)
   for (const dir of (await read($, snapshot)).expanded) await load($, dir)
@@ -359,6 +393,9 @@ async function watch($: EngineInterface): Promise<void> {
 }
 
 async function search($: EngineInterface, text: string): Promise<void> {
+  // Which search asked last: `find` and ripgrep can run for seconds, and a slow
+  // earlier one must not land its hits over the query now in the box.
+  const mine = ++searching
   await write($, 'query', () => text)
   const words = text.trim()
   if (words === '') {
@@ -379,9 +416,11 @@ async function search($: EngineInterface, text: string): Promise<void> {
       )
       hits = ran.stdout.split('\n').filter(Boolean).slice(0, SEARCH_LIMIT).map(path => ({ path }))
     }
+    if (mine !== searching) return
     await write($, 'results', () => hits)
     await say($, hits.length === 0 ? `Nothing under ${tilde(base)} ${how === 'text' ? 'contains' : 'is named like'} "${words}".` : null)
   } catch (err) {
+    if (mine !== searching) return
     await say($, `Search failed: ${reasonOf(err)}`)
   }
 }
@@ -827,6 +866,8 @@ export const register: Register = (on, options: Options) => {
 
     const hidden = shown.showHidden
     const marks = shown.git
+    // Indexed once for this drawing: every folder row asks it below.
+    const marksByPath = indexMarks(marks, base)
     const allListings = shown.listings
     const shownListings = hidden
       ? allListings
@@ -930,7 +971,7 @@ export const register: Register = (on, options: Options) => {
             if (row.type === 'cut') return <Text key="cut" dimColor>  … more: close some folders, or use Find</Text>
             const kind = classOf(row.entry.name, row.entry.kind, row.entry.isLink)
             const isChosen = row.path === chosen
-            const mark = row.entry.kind === 'dir' ? folderMark(row.path, marks) : marks[row.path] ?? null
+            const mark = row.entry.kind === 'dir' ? markFor(marksByPath, row.path) : marks[row.path] ?? null
             return (
               <Box key={`row:${relative(row.path, base)}`} flexDirection="row" hover={{ backgroundColor: '#1c2730' }}>
                 <Text color="cyan">{isChosen ? '▌' : ' '}</Text>
