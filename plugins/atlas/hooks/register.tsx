@@ -1,16 +1,16 @@
-// Atlas, a Dex-style explorer for your files: an explorer pane (tree,
-// properties, source viewer and actions) and a real terminal editor, micro by
-// default, run inside the pane.
+// Atlas, a Dex-style explorer for your files: an explorer pane (breadcrumbs,
+// tree with git marks, properties, source viewer and actions), search by name
+// or by text, and a real terminal editor, micro by default, run inside the pane.
 // editor/term.py hosts the editor in a pseudo-terminal and streams its screen
 // as Raster cells; a Client over the picture forwards keys and the pointer.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderSurface } from 'claude-code'
 
-import type { Details, Editing, Entry, Naming, Preview } from '../types'
+import type { Details, Editing, Entry, GitMark, Hit, Naming, Preview, SearchMode } from '../types'
 import {
-  basename, classOf, copyName, date, dirname, foldersBetween, join, literalPattern, nameProblem, printable,
-  printableSource, relative, rows, size, sorted,
+  basename, classOf, copyName, crumbs, date, dirname, folderMark, foldersBetween, isHidden, isMarkdown, isPng, join,
+  literalPattern, nameProblem, parseGitStatus, parseGrep, printable, printableSource, relative, rows, size, sorted,
 } from './files'
 
 const PANE = 'atlas'
@@ -19,9 +19,17 @@ const TREE_LIMITS = { perFolder: 300, rows: 800, characters: 50000 }
 const PREVIEW_BYTES = 512 * 1024
 const PREVIEW_LINES = 80
 const PREVIEW_CHARS = 9000
+// Lines of context before a search hit in the source viewer.
+const HIT_CONTEXT = 8
 const SEARCH_LIMIT = 200
 const EDITOR_HEADER_ROWS = 1
 const DEFAULT_COLOR = 0x01000000
+// How often the tree is read again while the pane shows, so what Claude
+// or a build writes appears by itself.
+const WATCH_MS = 4000
+const GIT_TIMEOUT_MS = 5000
+const MARK_COLORS: Record<GitMark, string> = { M: 'yellow', A: 'green', '?': 'green', D: 'red', R: 'blue' }
+const MARK_NAMES: Record<GitMark, string> = { M: 'modified', A: 'added', '?': 'untracked', D: 'deleted', R: 'renamed' }
 
 const root = atom({ plugin: 'atlas', key: 'root' } as const, '')
 const expanded = atom({ plugin: 'atlas', key: 'expanded' } as const, [])
@@ -29,10 +37,14 @@ const listings = atom({ plugin: 'atlas', key: 'listings' } as const, {})
 const selected = atom({ plugin: 'atlas', key: 'selected' } as const, null)
 const details = atom({ plugin: 'atlas', key: 'details' } as const, null)
 const query = atom({ plugin: 'atlas', key: 'query' } as const, '')
+const mode = atom({ plugin: 'atlas', key: 'mode' } as const, 'names')
 const results = atom({ plugin: 'atlas', key: 'results' } as const, null)
 const naming = atom({ plugin: 'atlas', key: 'naming' } as const, null)
 const notice = atom({ plugin: 'atlas', key: 'notice' } as const, null)
 const editing = atom({ plugin: 'atlas', key: 'editing' } as const, null)
+const showHidden = atom({ plugin: 'atlas', key: 'showHidden' } as const, false)
+const git = atom({ plugin: 'atlas', key: 'git' } as const, {})
+const hasPixels = atom({ plugin: 'atlas', key: 'hasPixels' } as const, false)
 
 type Options = { editor?: string; python?: string }
 type Size = { columns: number; rows: number }
@@ -42,6 +54,7 @@ type TerminalMessage =
   | { kind: 'size' }
   | { kind: 'key'; key: string; ctrl?: true; shift?: true; meta?: true }
   | { kind: 'pointer'; type: string; x: number; y: number; button: string }
+type Remembered = { root: string; expanded: string[] }
 
 // What only this process has. The editor's host is a child of this module, so
 // a hot reload ends it with the module, and these start over with it.
@@ -51,6 +64,7 @@ let helper: Helper | null = null
 let frame: Frame | null = null
 let editorView: Size | null = null // the editor's picture as last drawn
 let paneBody: Size = { columns: 100, rows: 30 }
+let isWatching = false
 const blanks = new Map<string, string>()
 
 const reasonOf = (err: unknown) => (err instanceof Error ? err.message : String(err))
@@ -76,39 +90,89 @@ function blankCells({ columns, rows: height }: Size): string {
   return cells
 }
 
+// Real pixels where the terminal speaks the kitty graphics protocol. Not
+// through tmux, which drops it, nor over ssh.
+async function pixelsHere($: EngineInterface): Promise<boolean> {
+  const isRelayed =
+    (await $.env.get('TMUX')) !== undefined ||
+    (await $.env.get('SSH_CONNECTION')) !== undefined ||
+    (await $.env.get('SSH_TTY')) !== undefined
+  if (isRelayed) return false
+  const term = (await $.env.get('TERM')) ?? ''
+  const program = ((await $.env.get('TERM_PROGRAM')) ?? '').toLowerCase()
+  return (await $.env.get('KITTY_WINDOW_ID')) !== undefined || term.includes('kitty') || term.includes('ghostty') || program === 'ghostty'
+}
+
 // ---------------------------------------------------------------- the tree
 
-async function load($: EngineInterface, dir: string): Promise<void> {
+/** Reads one folder; answers whether what it holds changed. */
+async function load($: EngineInterface, dir: string, isQuiet = false): Promise<boolean> {
   try {
     const listed = await $.fs.list(dir)
     const entries = sorted(listed.map(({ name, kind, size: bytes, mtimeMs, isLink }): Entry => (
       { name, kind, size: bytes, mtimeMs, isLink })))
+    const known = (await read($, listings))[dir]
+    if (known !== undefined && JSON.stringify(known) === JSON.stringify(entries)) return false
     await update($, listings, all => ({ ...all, [dir]: entries }))
+    return true
   } catch (err) {
-    await say($, `Cannot read ${tilde(dir)}: ${reasonOf(err)}`)
+    if (!isQuiet) await say($, `Cannot read ${tilde(dir)}: ${reasonOf(err)}`)
+    return false
   }
 }
 
-async function previewOf($: EngineInterface, path: string, bytes: number): Promise<Preview> {
+/** What git says about the files under the root; nothing outside a repository. */
+async function loadGit($: EngineInterface, base: string): Promise<boolean> {
+  let marks: Record<string, GitMark> = {}
+  try {
+    const top = await $.process.run(['git', '-C', base, 'rev-parse', '--show-toplevel'], { timeoutMs: GIT_TIMEOUT_MS })
+    const repo = top.stdout.trim()
+    if (top.exitCode === 0 && repo !== '') {
+      const ran = await $.process.run(
+        ['git', '-C', base, 'status', '--porcelain=v1', '-z', '--untracked-files=normal', '--', '.'],
+        { timeoutMs: GIT_TIMEOUT_MS },
+      )
+      if (ran.exitCode === 0 && !ran.isStdoutTruncated) marks = parseGitStatus(ran.stdout, repo)
+    }
+  } catch {
+    // No git here: the tree shows no marks.
+  }
+  const known = await read($, git)
+  if (JSON.stringify(known) === JSON.stringify(marks)) return false
+  await update($, git, () => marks)
+  return true
+}
+
+async function previewOf($: EngineInterface, path: string, bytes: number, aroundLine?: number): Promise<Preview> {
+  const name = basename(path)
+  if (isPng(name)) {
+    return (await read($, hasPixels)) ? { kind: 'image', path } : { kind: 'binary' }
+  }
   if (bytes > PREVIEW_BYTES) return { kind: 'large' }
   try {
     const text = await $.fs.read(path)
     const head = text.slice(0, 8000)
     if (head.includes('\0') || (head.match(/�/g)?.length ?? 0) > head.length / 20) return { kind: 'binary' }
     const lines = text.split('\n')
-    const kept = lines.slice(0, PREVIEW_LINES).join('\n')
+    if (isMarkdown(name) && aroundLine === undefined) {
+      const shown = text.slice(0, PREVIEW_CHARS)
+      return { kind: 'markdown', text: printableSource(shown).replace(/\t/g, '    '), isCut: text.length > PREVIEW_CHARS }
+    }
+    const startLine = aroundLine === undefined ? 1 : Math.max(1, aroundLine - HIT_CONTEXT)
+    const kept = lines.slice(startLine - 1, startLine - 1 + PREVIEW_LINES).join('\n')
     const shown = kept.slice(0, PREVIEW_CHARS)
     return {
       kind: 'text',
       text: printableSource(shown),
-      isCut: lines.length > PREVIEW_LINES || kept.length > PREVIEW_CHARS,
+      isCut: lines.length > startLine - 1 + PREVIEW_LINES || kept.length > PREVIEW_CHARS,
+      startLine,
     }
   } catch (err) {
     return { kind: 'unreadable', reason: reasonOf(err) }
   }
 }
 
-async function select($: EngineInterface, path: string | null): Promise<void> {
+async function select($: EngineInterface, path: string | null, aroundLine?: number): Promise<void> {
   await update($, selected, () => path)
   if (path === null) {
     await update($, details, () => null)
@@ -130,7 +194,7 @@ async function select($: EngineInterface, path: string | null): Promise<void> {
       isLink: stat.isLink,
       realPath: stat.isLink ? stat.realPath ?? null : null,
       items,
-      preview: stat.kind === 'file' ? await previewOf($, path, stat.size) : null,
+      preview: stat.kind === 'file' ? await previewOf($, path, stat.size, aroundLine) : null,
     }
     // A later selection may have landed while this one read.
     if ((await read($, selected)) === path) await update($, details, () => found)
@@ -140,37 +204,72 @@ async function select($: EngineInterface, path: string | null): Promise<void> {
   }
 }
 
+async function remember($: EngineInterface): Promise<void> {
+  const kept: Remembered = { root: await read($, root), expanded: await read($, expanded) }
+  try {
+    await $.store.set(`root:${cwd}`, kept)
+  } catch {}
+}
+
 async function toggle($: EngineInterface, path: string): Promise<void> {
   if ((await read($, expanded)).includes(path)) {
     await update($, expanded, list => list.filter(p => p !== path && !p.startsWith(`${path}/`)))
-    return
+  } else {
+    await load($, path)
+    await update($, expanded, list => [...list, path])
   }
-  await load($, path)
-  await update($, expanded, list => [...list, path])
+  await remember($)
 }
 
 async function setRoot($: EngineInterface, dir: string): Promise<void> {
   await update($, root, () => dir)
   await update($, results, () => null)
   await load($, dir)
+  await loadGit($, dir)
+  await remember($)
 }
 
 /** Opens every folder down to `path` and selects it. */
-async function reveal($: EngineInterface, path: string): Promise<void> {
+async function reveal($: EngineInterface, path: string, line?: number): Promise<void> {
   const base = await read($, root)
   for (const dir of foldersBetween(base, path)) {
     await load($, dir)
     await update($, expanded, list => (list.includes(dir) ? list : [...list, dir]))
   }
   await update($, results, () => null)
-  await select($, path)
+  await select($, path, line)
+  await remember($)
 }
 
 async function refresh($: EngineInterface): Promise<void> {
   await say($, null)
-  await load($, await read($, root))
+  const base = await read($, root)
+  await load($, base)
   for (const dir of await read($, expanded)) await load($, dir)
+  await loadGit($, base)
   await select($, await read($, selected))
+}
+
+/** A quiet pass while the pane shows: the folders on screen and git, redrawing only on a change. */
+async function watch($: EngineInterface): Promise<void> {
+  if (isWatching || helper !== null) return
+  const base = await read($, root)
+  if (base === '') return
+  let isShown = false
+  try {
+    isShown = (await $.ui.panes()).some(pane => pane.id === PANE && pane.isShown)
+  } catch {}
+  if (!isShown) return
+  isWatching = true
+  try {
+    let changed = await load($, base, true)
+    for (const dir of await read($, expanded)) changed = (await load($, dir, true)) || changed
+    await loadGit($, base)
+    const chosen = await read($, selected)
+    if (changed && chosen !== null && (await read($, details))?.path === chosen) await select($, chosen)
+  } finally {
+    isWatching = false
+  }
 }
 
 async function search($: EngineInterface, text: string): Promise<void> {
@@ -181,18 +280,45 @@ async function search($: EngineInterface, text: string): Promise<void> {
     return
   }
   const base = await read($, root)
+  const how = await read($, mode)
   try {
-    const ran = await $.process.run(
-      ['find', base, '-mindepth', '1', '(', '-name', '.git', '-o', '-name', 'node_modules', ')', '-prune', '-o',
-        '-iname', literalPattern(words), '-print'],
-      { timeoutMs: 8000 },
-    )
-    const hits = ran.stdout.split('\n').filter(Boolean).slice(0, SEARCH_LIMIT)
+    let hits: Hit[]
+    if (how === 'text') {
+      hits = await grep($, base, words)
+    } else {
+      const ran = await $.process.run(
+        ['find', base, '-mindepth', '1', '(', '-name', '.git', '-o', '-name', 'node_modules', ')', '-prune', '-o',
+          '-iname', literalPattern(words), '-print'],
+        { timeoutMs: 8000 },
+      )
+      hits = ran.stdout.split('\n').filter(Boolean).slice(0, SEARCH_LIMIT).map(path => ({ path }))
+    }
     await update($, results, () => hits)
-    await say($, hits.length === 0 ? `Nothing under ${tilde(base)} is named like "${words}".` : null)
+    await say($, hits.length === 0 ? `Nothing under ${tilde(base)} ${how === 'text' ? 'contains' : 'is named like'} "${words}".` : null)
   } catch (err) {
     await say($, `Search failed: ${reasonOf(err)}`)
   }
+}
+
+/** Lines holding the text, by ripgrep when it is there, else grep. */
+async function grep($: EngineInterface, base: string, words: string): Promise<Hit[]> {
+  const commands = [
+    ['rg', '--no-heading', '--line-number', '--color', 'never', '--smart-case', '--max-count', '3', '--max-columns', '200',
+      '--max-count', '3', '--glob', '!.git', '--glob', '!node_modules', '-e', words, base],
+    ['grep', '-rIn', '--exclude-dir=.git', '--exclude-dir=node_modules', '-i', '-e', words, base],
+  ]
+  let lastError: unknown = null
+  for (const argv of commands) {
+    try {
+      const ran = await $.process.run(argv, { timeoutMs: 15000 })
+      // 1 means nothing matched; 2 and up is a failure (grep) or a missing program.
+      if (ran.exitCode > 1) throw new Error(ran.stderr.trim() || `${argv[0]} exited ${ran.exitCode}`)
+      return parseGrep(ran.stdout, SEARCH_LIMIT)
+    } catch (err) {
+      lastError = err
+    }
+  }
+  throw new Error(`neither rg nor grep could search: ${reasonOf(lastError)}`)
 }
 
 // ---------------------------------------------------------------- actions
@@ -258,6 +384,7 @@ async function finishNaming($: EngineInterface, typed: string): Promise<void> {
   const base = await read($, root)
   if (dir !== base) await update($, expanded, list => (list.includes(dir) ? list : [...list, dir]))
   await load($, dir)
+  await loadGit($, base)
   await select($, to)
   await say($, named.action === 'rename' ? `Renamed to ${name}.` : `Created ${name}.`)
 }
@@ -272,6 +399,7 @@ async function duplicate($: EngineInterface, path: string): Promise<void> {
       return
     }
     await load($, dirname(path))
+    await loadGit($, await read($, root))
     await select($, to)
     await say($, `Duplicated as ${nameOf(to)}.`)
     return
@@ -279,7 +407,7 @@ async function duplicate($: EngineInterface, path: string): Promise<void> {
   await say($, `Too many copies of ${nameOf(path)} already.`)
 }
 
-/** Moves to the Trash, never deletes: macOS's trash, else gio on Linux. */
+/** Moves to the Trash, never deletes: macOS's trash, else gio or trash-cli on Linux. */
 async function trash($: EngineInterface, path: string): Promise<void> {
   const name = nameOf(path)
   let answer: string
@@ -290,14 +418,14 @@ async function trash($: EngineInterface, path: string): Promise<void> {
   }
   if (answer !== 'Move to Trash') return
   let ran = null
-  for (const argv of [['trash', path], ['gio', 'trash', path]]) {
+  for (const argv of [['trash', path], ['gio', 'trash', path], ['trash-put', path]]) {
     try {
       ran = await $.process.run(argv, { timeoutMs: 30000 })
       break
     } catch {}
   }
   if (ran === null) {
-    await say($, 'No trash command here (macOS 15 or later has one; Linux needs gio). Nothing was deleted.')
+    await say($, 'No trash command here (macOS 15 or later has one; Linux needs gio or trash-cli). Nothing was deleted.')
     return
   }
   if (ran.exitCode !== 0 || (await $.fs.exists(path))) {
@@ -306,6 +434,7 @@ async function trash($: EngineInterface, path: string): Promise<void> {
   }
   await update($, expanded, list => list.filter(p => p !== path && !p.startsWith(`${path}/`)))
   await load($, dirname(path))
+  await loadGit($, await read($, root))
   await select($, null)
   await say($, `Moved ${name} to the Trash.`)
 }
@@ -318,6 +447,19 @@ async function mention($: EngineInterface, path: string): Promise<void> {
 async function copyPath($: EngineInterface, path: string, surface: RenderSurface): Promise<void> {
   const copied = await $.ui.copy({ text: path, surface })
   $.ui.toast(copied.isCopied ? 'Copied the path.' : 'Could not copy the path here.')
+}
+
+/** Opens the file or folder with the system's own app: `open` on macOS, `xdg-open` on Linux. */
+async function openWithApp($: EngineInterface, path: string): Promise<void> {
+  for (const argv of [['open', path], ['xdg-open', path]]) {
+    try {
+      const ran = await $.process.run(argv, { timeoutMs: 10000 })
+      if (ran.exitCode === 0) return
+      await say($, `Could not open ${nameOf(path)}: ${ran.stderr.trim() || `${argv[0]} exited ${ran.exitCode}`}`)
+      return
+    } catch {}
+  }
+  await say($, 'No open command here (open on macOS, xdg-open on Linux).')
 }
 
 // ---------------------------------------------------------------- the editor
@@ -434,6 +576,7 @@ async function edit($: EngineInterface, options: Options, path: string): Promise
     }
     await update($, editing, () => null)
     await load($, dirname(path))
+    await loadGit($, await read($, root))
     if ((await read($, selected)) === path) await select($, path)
   })().catch(() => {}) // the module unloaded under the loop: nothing left to tell
 }
@@ -446,10 +589,17 @@ export const register: Register = (on, options: Options) => {
   on('session.start', async ($, e, next) => {
     cwd = e.cwd
     home = (await $.env.get('HOME')) ?? ''
-    await $.command.register({ name: 'atlas', description: 'Explore files in a pane; a file opens in micro (/atlas [path])' })
+    await $.command.register({ name: 'atlas', description: 'Explore files in a pane; a file opens in micro (/atlas [path])', immediate: true })
+    const pixels = e.surface === 'terminal' && (await pixelsHere($))
+    await update($, hasPixels, () => pixels)
+    try {
+      const kept = await $.store.get('showHidden')
+      await update($, showHidden, () => kept === true)
+    } catch {}
     // A reload ended the old editor with the old module.
     const closed = 'The editor closed when atlas reloaded. micro keeps a backup of unsaved changes and offers it when you reopen the file.'
     await update($, editing, (now): Editing | null => (now === null ? now : { ...now, status: 'error', message: closed }))
+    if (e.isInteractive) $.clock.every(WATCH_MS, () => void watch($).catch(() => {}))
 
     return next(e)
   })
@@ -469,9 +619,20 @@ export const register: Register = (on, options: Options) => {
         return { text: `atlas: nothing at ${typed}.` }
       }
     } else if ((await read($, root)) === '') {
-      await setRoot($, cwd)
+      // Back where the person left this project last time, when that folder is still there.
+      let kept: Remembered | null = null
+      try {
+        const stored = (await $.store.get(`root:${cwd}`)) as Remembered | undefined
+        if (stored && typeof stored.root === 'string' && (await $.fs.exists(stored.root))) kept = stored
+      } catch {}
+      await setRoot($, kept?.root ?? cwd)
+      if (kept) {
+        for (const dir of kept.expanded.filter(p => p.startsWith(`${kept.root}/`))) {
+          if (await load($, dir)) await update($, expanded, list => (list.includes(dir) ? list : [...list, dir]))
+        }
+      }
     } else {
-      await load($, await read($, root))
+      await refresh($)
     }
     const opened = await openPane($)
     const base = await read($, root)
@@ -521,7 +682,8 @@ export const register: Register = (on, options: Options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Code, Text } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Button, Code, Markdown, Text } = elements
     paneBody = { columns: e.props.bodyColumns, rows: e.props.scroll.bodyRows }
     const now = await read($, editing)
     const base = await read($, root)
@@ -566,23 +728,59 @@ export const register: Register = (on, options: Options) => {
     }
     editorView = null
 
-    const tree = rows(base, await read($, listings), await read($, expanded), TREE_LIMITS)
+    const hidden = await read($, showHidden)
+    const marks = await read($, git)
+    const allListings = await read($, listings)
+    const shownListings = hidden
+      ? allListings
+      : Object.fromEntries(Object.entries(allListings).map(([dir, entries]) => [dir, entries.filter(entry => !isHidden(entry.name))]))
+    const tree = rows(base, shownListings, await read($, expanded), TREE_LIMITS)
+    const hiddenCount = (allListings[base] ?? []).filter(entry => isHidden(entry.name)).length
     const chosen = await read($, selected)
     const info = await read($, details)
     const hits = await read($, results)
     const named = await read($, naming)
     const line = await read($, notice)
     const typed = await read($, query)
+    const how = await read($, mode)
+    const pixels = await read($, hasPixels)
     const width = e.props.bodyColumns
     const isWide = width >= 90
     const treeWidth = isWide ? Math.min(48, Math.floor(width * 0.42)) : width
+    const canType = e.surface !== 'mobile' // mobile draws no Input: naming needs one
+    const changed = Object.keys(marks).length
+    const setMode = async (next: SearchMode) => {
+      await update($, mode, () => next)
+      if (typed.trim()) await search($, typed)
+    }
+    const toggleHidden = async () => {
+      const next = !hidden
+      await update($, showHidden, () => next)
+      try {
+        await $.store.set('showHidden', next)
+      } catch {}
+    }
+    const collapseAll = async () => {
+      await update($, expanded, () => [])
+      await remember($)
+    }
 
     let finder = null
     if (e.surface !== 'mobile') {
       const { Input } = $.ui.resolve(e)
       finder = (
-        <Input key="find" label="Find" placeholder="part of a name under this folder" value={typed} submitLabel="search"
-          onSubmit={value => search($, value)} />
+        <Box flexDirection="row" gap={1}>
+          <Box flexGrow={1} flexShrink={1}>
+            <Input key="find" label="⌕ " placeholder={how === 'text' ? 'text inside files under this folder' : 'part of a name under this folder'}
+              value={typed} submitLabel="search" onSubmit={value => search($, value)} />
+          </Box>
+          {how === 'names'
+            ? <Text bold inverse>{' names '}</Text>
+            : <Button key="mode-names" plain label="names" onPress={() => setMode('names')} />}
+          {how === 'text'
+            ? <Text bold inverse>{' text '}</Text>
+            : <Button key="mode-text" plain label="text" onPress={() => setMode('text')} />}
+        </Box>
       )
     }
 
@@ -610,9 +808,16 @@ export const register: Register = (on, options: Options) => {
             <Text bold>{`${hits.length}${hits.length === SEARCH_LIMIT ? '+' : ''} found`}</Text>
             <Button key="clear" plain label="Back to the tree" onPress={() => update($, results, () => null)} />
           </Box>
-          {hits.map(path => (
-            <Button key={`r:${relative(path, base)}`} plain label={relOf(path, base)} onPress={() => reveal($, path)} />
-          ))}
+          {hits.map((hit, index) => {
+            const where = relOf(hit.path, base)
+            const key = hit.line === undefined ? `r:${relative(hit.path, base)}` : `r:${relative(hit.path, base)}:${hit.line}`
+            return (
+              <Box key={`hit-${index}`} flexDirection="column">
+                <Button key={key} plain label={hit.line === undefined ? where : `${where}:${hit.line}`} onPress={() => reveal($, hit.path, hit.line)} />
+                {hit.text !== undefined && <Text dimColor wrap="truncate-end">{`    ${hit.text}`}</Text>}
+              </Box>
+            )
+          })}
         </Box>
       )
     } else {
@@ -621,18 +826,19 @@ export const register: Register = (on, options: Options) => {
       const ringStart = tree.some(row => row.path === chosen) ? chosen : firstEntry?.path
       explorer = (
         <Box flexDirection="column">
-          {tree.length === 0 && <Text dimColor>This folder is empty.</Text>}
+          {tree.length === 0 && <Text dimColor>{hiddenCount > 0 ? `Only hidden files here (${hiddenCount}).` : 'This folder is empty.'}</Text>}
           {tree.map(row => {
             const indent = '  '.repeat(row.depth)
             if (row.type === 'more') return <Text key={`more:${relative(row.path, base)}`} dimColor>{`  ${indent}… ${row.hidden} more`}</Text>
             if (row.type === 'cut') return <Text key="cut" dimColor>  … more: close some folders, or use Find</Text>
             const kind = classOf(row.entry.name, row.entry.kind, row.entry.isLink)
             const isChosen = row.path === chosen
+            const mark = row.entry.kind === 'dir' ? folderMark(row.path, marks) : marks[row.path] ?? null
             return (
-              <Box flexDirection="row">
+              <Box key={`row:${relative(row.path, base)}`} flexDirection="row" hover={{ backgroundColor: '#1c2730' }}>
                 <Text color="cyan">{isChosen ? '▌' : ' '}</Text>
                 <Text color={kind.color}>{`${indent}${row.entry.kind === 'dir' ? (row.isOpen ? '▾' : '▸') : kind.glyph} `}</Text>
-                <Button key={`n:${relative(row.path, base)}`} plain dimColor={row.entry.name.startsWith('.') && !isChosen}
+                <Button key={`n:${relative(row.path, base)}`} plain dimColor={isHidden(row.entry.name) && !isChosen}
                   autoFocus={row.path === ringStart ? true : undefined}
                   label={printable(row.entry.kind === 'dir' ? `${row.entry.name}/` : row.entry.name)}
                   onPress={async () => {
@@ -640,6 +846,9 @@ export const register: Register = (on, options: Options) => {
                     if (row.entry.kind === 'dir') await toggle($, row.path)
                     await select($, row.path)
                   }} />
+                {mark !== null && (
+                  <Text color={MARK_COLORS[mark]}>{row.entry.kind === 'dir' ? ' •' : ` ${mark}`}</Text>
+                )}
               </Box>
             )
           })}
@@ -647,26 +856,39 @@ export const register: Register = (on, options: Options) => {
       )
     }
 
-    const prop = (name: string, value: string) => (
+    const prop = (name: string, value: string, color?: string) => (
       <Box key={`prop:${name}`} flexDirection="row">
         <Box width={10} flexShrink={0}><Text dimColor>{name}</Text></Box>
-        <Text wrap="truncate-middle">{value}</Text>
+        <Text wrap="truncate-middle" color={color}>{value}</Text>
       </Box>
     )
     const isFile = info !== null && info.kind === 'file'
     const isDir = info !== null && info.kind === 'dir'
-    const canType = e.surface !== 'mobile' // mobile draws no Input: naming needs one
+    const chosenMark = info === null ? null : marks[info.path] ?? null
     let source = null
     if (info?.preview) {
       const shown = info.preview
-      source = shown.kind === 'text'
-        ? (
+      if (shown.kind === 'text') {
+        source = (
           <Box flexDirection="column">
-            <Code source={shown.text || ' '} path={printable(info.path)} startLine={1} wrap="truncate-end" />
+            {shown.startLine > 1 && <Text dimColor>{`… from line ${shown.startLine}`}</Text>}
+            <Code source={shown.text || ' '} path={printable(info.path)} startLine={shown.startLine} wrap="truncate-end" />
             {shown.isCut && <Text dimColor>{`… press e to open the whole file in ${program}`}</Text>}
           </Box>
         )
-        : <Text dimColor>{shown.kind === 'binary' ? 'Binary file: no preview.' : shown.kind === 'large' ? 'Too large to preview here.' : `Cannot read it: ${shown.reason}`}</Text>
+      } else if (shown.kind === 'markdown') {
+        source = (
+          <Box flexDirection="column">
+            <Markdown key="markdown" text={shown.text || ' '} />
+            {shown.isCut && <Text dimColor>{`… press e to open the whole file in ${program}`}</Text>}
+          </Box>
+        )
+      } else if (shown.kind === 'image' && 'Image' in elements && pixels) {
+        const room = { columns: Math.max(10, Math.min(isWide ? width - treeWidth - 4 : width - 2, 80)), rows: Math.max(4, Math.min(24, Math.floor(paneBody.rows * 0.5))) }
+        source = <elements.Image key="picture" source={{ file: shown.path, format: 'png', generation: info.mtimeMs }} columns={room.columns} rows={room.rows} alt={nameOf(shown.path)} />
+      } else {
+        source = <Text dimColor>{shown.kind === 'binary' ? 'Binary file: no preview.' : shown.kind === 'large' ? 'Too large to preview here.' : shown.kind === 'image' ? 'A picture: open it with its app to see it.' : `Cannot read it: ${shown.reason}`}</Text>
+      }
     }
 
     const inspector = (
@@ -682,6 +904,7 @@ export const register: Register = (on, options: Options) => {
               {isFile && prop('Size', size(info.size))}
               {isDir && info.items !== null && prop('Items', String(info.items))}
               {prop('Modified', date(info.mtimeMs))}
+              {chosenMark !== null && prop('Git', MARK_NAMES[chosenMark], MARK_COLORS[chosenMark])}
               {info.realPath !== null && prop('Links to', tilde(info.realPath))}
             </Box>
           )}
@@ -691,23 +914,41 @@ export const register: Register = (on, options: Options) => {
           {isDir && <Button key="open" plain hotkey="o" label="Open as root" onPress={() => setRoot($, info.path)} />}
           {chosen !== null && <Button key="mention" plain hotkey="p" label="Add to prompt" onPress={() => mention($, chosen)} />}
           {chosen !== null && <Button key="copy-path" plain hotkey="c" label="Copy path" onPress={press => copyPath($, chosen, press.surface)} />}
+          {chosen !== null && e.surface === 'terminal' && <Button key="open-app" plain hotkey="a" label="Open with app" onPress={() => openWithApp($, chosen)} />}
           {chosen !== null && canType && <Button key="rename" plain hotkey="r" label="Rename" onPress={() => startNaming($, 'rename')} />}
           {chosen !== null && <Button key="duplicate" plain hotkey="d" label="Duplicate" onPress={() => duplicate($, chosen)} />}
           {chosen !== null && <Button key="trash" plain hotkey="x" label="Trash" onPress={() => trash($, chosen)} />}
           {canType && <Button key="new-file" plain hotkey="n" label="New file" onPress={() => startNaming($, 'file')} />}
           {canType && <Button key="new-folder" plain hotkey="f" label="New folder" onPress={() => startNaming($, 'folder')} />}
         </Box>
-        {source !== null && <Text bold>Source</Text>}
+        {source !== null && <Text bold>{info?.preview?.kind === 'markdown' ? 'Preview' : 'Source'}</Text>}
         {source}
       </Box>
     )
 
+    const trail = crumbs(base, home)
+    const shownTrail = trail.length > 4 ? trail.slice(-4) : trail
     return (
       <Box flexDirection="column">
-        <Box flexDirection="row" gap={1}>
+        <Box flexDirection="row" gap={1} flexWrap="wrap">
           <Box flexShrink={0}><Text bold color="cyan">Atlas</Text></Box>
-          <Box flexGrow={1} flexShrink={1}><Text dimColor wrap="truncate-start">{tilde(base)}</Text></Box>
+          <Box flexDirection="row" flexShrink={1} flexWrap="wrap">
+            {trail.length > 4 && <Text dimColor>{'… '}</Text>}
+            {shownTrail.map((crumb, index) => (
+              <Box key={`crumb-${index}`} flexDirection="row">
+                {index === shownTrail.length - 1
+                  ? <Text bold>{printable(crumb.label)}</Text>
+                  : <Button key={`crumb:${crumb.path}`} plain dimColor label={printable(crumb.label)} onPress={() => setRoot($, crumb.path)} />}
+                {index < shownTrail.length - 1 && <Text dimColor>{' › '}</Text>}
+              </Box>
+            ))}
+          </Box>
+          <Box flexGrow={1} />
+          {changed > 0 && <Text color="yellow">{`${changed} changed`}</Text>}
           <Button key="up" plain hotkey="u" label="Up" onPress={() => setRoot($, dirname(base))} />
+          <Button key="hidden" plain hotkey="h" label={hidden ? 'Hide dotfiles' : `Show dotfiles${hiddenCount > 0 ? ` (${hiddenCount})` : ''}`}
+            onPress={() => toggleHidden()} />
+          <Button key="collapse" plain hotkey="z" label="Collapse" onPress={() => collapseAll()} />
           <Button key="refresh" plain hotkey="g" label="Refresh" onPress={() => refresh($)} />
         </Box>
         {finder}

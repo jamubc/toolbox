@@ -279,7 +279,7 @@ const bitmap = decodeBmp(Uint8Array.fromBase64((await $.fs.read(file, { as: 'byt
 <Raster key="pic" columns={box.columns} rows={box.rows} cells={toCells(bitmap, box.columns, box.rows)} />
 ```
 
-`decodeBmp`, `toCells`, `fit` (keeps the shape; a cell is twice as tall as wide): `plugins/channel/hooks/ui/picture.ts`. Bump `generation` when a file path is reused.
+`decodeBmp`, `toCells` (averages the pixels each half-cell covers), `cellsOf` (the same cells encoded once per size), `fit` (keeps the shape; a cell is twice as tall as wide): `plugins/channel/hooks/ui/picture.ts`. Bump `generation` when a file path is reused. To learn whether the terminal drew an `Image` or its alt text, `$.ui.blit` the same source again a moment later: a `deny` that is not about mounting means fall back to cells (channel's `probe`, browse's frames).
 
 ## Keys and pointer over a drawing
 
@@ -330,7 +330,7 @@ Sites: `UserMessage`, `AssistantMessage`, `ToolUse`, `ToolResult`, `ToolGroup`, 
 | --- | --- |
 | Re-rendering to animate | `$.ui.blit` on `$.clock.every` |
 | Big picture bytes in memory | PNG file source; the terminal reads it |
-| Encoding the same cells every draw | Cache the base64 by size (`Map<string, string>`) |
+| Encoding the same cells every draw | Cache the base64 by size (`Map<string, string>`; channel keeps one per bitmap in a `WeakMap`) |
 | Drawing rows nobody sees | Draw only what fits `bodyRows`; a pane holds about 100,000 characters, a `Text` 10,000 |
 | `invalidate` per message | Once per batch; redraws are throttled to 10 a second anyway |
 | Work at draw time | Compute in handlers, read in `ui.render` |
