@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { toUrl } from '../hooks/address'
@@ -192,6 +193,61 @@ test('outside the terminal it says so instead of starting a browser', async ($, 
     expect((await ui.find({ text: /draws only in Claude Code's terminal/ }))).toBeDefined()
     await ui.unmount()
   }
+})
+
+/**
+ * What /clear does to a plugin: the session ends and a new one begins in the same process, so the
+ * host's `$.state` reads as never written while the module, its pane and Chrome live on. From the
+ * mark, every read answers "never written" until the plugin writes that key again; through
+ * `next`, so the drawing that read the key is still redrawn when it is written.
+ */
+function clearSession(on: On) {
+  let isCleared = false
+  const written = new Set<string>()
+  on('state.get', async (_$, e, next) => {
+    const got = await next(e)
+    return (isCleared && !written.has(e.key) ? { value: { value: undefined, version: 0 } } : got) as never
+  })
+  on('state.set', (_$, e, next) => {
+    if (isCleared) written.add(e.key)
+    return next(e)
+  })
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+  return async ($: Engine) => {
+    await ($ as any).session.end({ reason: 'clear', sessionId: 'before', resume: { id: 'before' } })
+    isCleared = true
+    written.clear()
+  }
+}
+
+test('after /clear the page is still up, in the same picture, and the browser still answers', async ($, on) => {
+  const calls: Call[] = []
+  const clear = clearSession(on)
+  const clock = mock.clock(on)
+  fakeWorld(on, [READY, PAGE], calls)
+  mock.env(on, { TERM: 'xterm-ghostty', TERM_PROGRAM: 'ghostty' })
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'browse', args: PAGE.url, ...RUN } as never)
+  const ui = await $.ui.mount({ plugin: 'browse', surface: 'terminal', ...PANE })
+  await until(ui, () => calls.some(c => c.path === '/navigate'))
+  expect(await ui.find({ type: 'Image', key: 'view' })).toBeDefined()
+  await ui.unmount()
+
+  await clear($)
+  const after = await $.ui.mount({ plugin: 'browse', surface: 'terminal', ...PANE })
+  // Not "The browser is stopped" with a Start button that cannot start what is already running.
+  expect(await after.find({ key: 'start' })).toBeUndefined()
+  expect(await after.find({ text: /lofi - YouTube/ })).toBeDefined()
+  expect(await after.find({ type: 'Image', key: 'view' })).toBeDefined()
+  await clock.advance(1)
+
+  await after.input({ key: 'address', text: 'example.com' })
+  expect(calls.at(-1)).toEqual({ path: '/navigate', body: { url: 'https://example.com' } })
+  await after.unmount()
+
+  const closed = await $.command.run({ command: 'browse', args: 'close', ...RUN } as never)
+  expect(closed.text).toBe('Browser closed.')
+  expect(calls.at(-1)?.path).toBe('/shutdown')
 })
 
 test('turns what was typed into a URL or a search', () => {

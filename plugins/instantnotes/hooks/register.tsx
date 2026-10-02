@@ -4,7 +4,7 @@
 // `claude mcp add instantnotes …`, and otherwise by running `instantnotes mcp`
 // itself, found from that same configuration, the app bundle, or PATH.
 
-import { atom, read, update } from 'claude-code'
+import { atom, derive, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Hit, OpenNote, Problem, Source } from '../types'
@@ -32,6 +32,76 @@ const problem = atom({ plugin: 'instantnotes', key: 'problem' } as const, null)
 const isBusy = atom({ plugin: 'instantnotes', key: 'isBusy' } as const, false)
 const isComposing = atom({ plugin: 'instantnotes', key: 'isComposing' } as const, false)
 const source = atom({ plugin: 'instantnotes', key: 'source' } as const, null)
+const seeded = atom({ plugin: 'instantnotes', key: 'seeded' } as const, false)
+
+// /clear ends the session but not the process: the host's `$.state` starts over empty while this
+// module and its pane live on, so read straight from the host the search and the open note are
+// suddenly gone. `seeded` is false exactly then, and before the first `session.start`. `snapshot` is
+// what the pane draws from, read in one go: the host's while `seeded`, else what this process
+// last saw; `write` puts the kept values back before the first change after a /clear, and a
+// render that finds `seeded` false schedules that.
+type Snapshot = {
+  query: string
+  typed: string
+  hits: Hit[]
+  note: OpenNote | null
+  problem: Problem | null
+  isBusy: boolean
+  isComposing: boolean
+  source: Source
+}
+const KEYS = ['query', 'typed', 'hits', 'note', 'problem', 'isBusy', 'isComposing', 'source'] as const
+let kept: Snapshot = { query: '', typed: '', hits: [], note: null, problem: null, isBusy: false, isComposing: false, source: null }
+let wasLive: boolean | null = null // what the last read saw; null before the first
+const snapshot = derive(
+  [seeded, query, typed, hits, note, problem, isBusy, isComposing, source],
+  (isLive, query, typed, hits, note, problem, isBusy, isComposing, source): Snapshot => {
+    wasLive = isLive
+    if (!isLive) return kept
+    kept = { query, typed, hits, note, problem, isBusy, isComposing, source }
+    return kept
+  },
+)
+
+/** The one place the atoms are written: each key to its own, as the validator asks. */
+async function put<K extends keyof Snapshot>($: EngineInterface, key: K, value: Snapshot[K]): Promise<void> {
+  switch (key) {
+    case 'query': await update($, query, () => value as Snapshot['query']); break
+    case 'typed': await update($, typed, () => value as Snapshot['typed']); break
+    case 'hits': await update($, hits, () => value as Snapshot['hits']); break
+    case 'note': await update($, note, () => value as Snapshot['note']); break
+    case 'problem': await update($, problem, () => value as Snapshot['problem']); break
+    case 'isBusy': await update($, isBusy, () => value as Snapshot['isBusy']); break
+    case 'isComposing': await update($, isComposing, () => value as Snapshot['isComposing']); break
+    case 'source': await update($, source, () => value as Snapshot['source']); break
+  }
+}
+
+/** After a /clear (or at the first start), writes what this process kept back to the host. */
+let reseeding: Promise<void> | null = null
+function reseed($: EngineInterface): Promise<void> {
+  reseeding ??= (async () => {
+    try {
+      if (await read($, seeded)) return
+      for (const key of KEYS) await put($, key, kept[key])
+      await update($, seeded, () => true)
+      wasLive = true
+    } finally {
+      reseeding = null
+    }
+  })()
+  return reseeding
+}
+
+/** Changes one value from what `snapshot` reads, and keeps it here too. */
+async function write<K extends keyof Snapshot>($: EngineInterface, key: K, change: (now: Snapshot[K]) => Snapshot[K]): Promise<void> {
+  // `kept` is current once a read has seen the host live: only this module writes these values.
+  if (wasLive === null) await read($, snapshot)
+  if (!wasLive) await reseed($)
+  const next = change(kept[key])
+  kept = { ...kept, [key]: next }
+  await put($, key, next)
+}
 
 type Options = { binary?: string; db?: string }
 
@@ -131,12 +201,12 @@ async function callProcess($: EngineInterface, argv: readonly string[], name: st
 
 /** Asks InstantNotes one question, by the server Claude Code runs when it has one, else by a process of its own. */
 async function ask($: EngineInterface, options: Options, name: string, args: Record<string, unknown>): Promise<any> {
-  let from = await read($, source)
+  let from = (await read($, snapshot)).source
   if (from === null && !mcpIsDown) {
     try {
       const reply = await $.mcp.call(SERVER, name, args)
       const viaMcp: Source = { kind: 'mcp', server: SERVER }
-      await update($, source, () => viaMcp)
+      await write($, 'source', () => viaMcp)
       return resultOf(reply)
     } catch (err) {
       // Not connected here: the person has not run `claude mcp add`, or it is off.
@@ -148,14 +218,14 @@ async function ask($: EngineInterface, options: Options, name: string, args: Rec
     return resultOf(await $.mcp.call(from.server, name, args))
   }
   const running = from ?? (await processSource($, options))
-  if (from === null) await update($, source, () => running)
+  if (from === null) await write($, 'source', () => running)
   if (running === null || running.kind !== 'process') throw new Error('InstantNotes is not reachable')
   try {
     return await callProcess($, running.argv, name, args)
   } catch (err) {
     if (isNotFound(reasonOf(err))) {
       // Forget the program so the next try looks again (after an install, a /config change).
-      await update($, source, () => null)
+      await write($, 'source', () => null)
     }
     throw err
   }
@@ -163,20 +233,20 @@ async function ask($: EngineInterface, options: Options, name: string, args: Rec
 
 /** Runs one request, showing that it is under way and what went wrong. */
 async function attempt<T>($: EngineInterface, work: () => Promise<T>): Promise<T | undefined> {
-  await update($, isBusy, () => true)
+  await write($, 'isBusy', () => true)
   try {
     const result = await work()
-    await update($, problem, () => null)
+    await write($, 'problem', () => null)
     return result
   } catch (err) {
     const message = reasonOf(err)
     const trouble: Problem = isNotFound(message)
       ? { message: `InstantNotes could not be started: ${message}`, steps: SETUP_STEPS }
       : { message, steps: [] }
-    await update($, problem, () => trouble)
+    await write($, 'problem', () => trouble)
     return undefined
   } finally {
-    await update($, isBusy, () => false)
+    await write($, 'isBusy', () => false)
   }
 }
 
@@ -194,13 +264,13 @@ function toHit(found: any): Hit {
 
 async function search($: EngineInterface, options: Options, text: string, isForced = false): Promise<void> {
   const words = text.trim()
-  await update($, query, () => words)
-  await update($, typed, () => words)
-  await update($, note, () => null)
+  await write($, 'query', () => words)
+  await write($, 'typed', () => words)
+  await write($, 'note', () => null)
   const now = await $.clock.now()
   if (words === '' && !isForced && recent !== null && now - recent.at < CACHE_MS) {
     const kept = recent.hits
-    await update($, hits, () => kept)
+    await write($, 'hits', () => kept)
     return
   }
   const found = await attempt($, async (): Promise<Hit[]> =>
@@ -209,7 +279,7 @@ async function search($: EngineInterface, options: Options, text: string, isForc
       : ((await ask($, options, 'list_notes', { limit: LIST_LIMIT })).notes ?? []).map(toHit))
   if (found === undefined) return
   if (words === '') recent = { hits: found, at: now }
-  await update($, hits, () => found)
+  await write($, 'hits', () => found)
 }
 
 async function openNote($: EngineInterface, options: Options, id: string, isFresh = false): Promise<void> {
@@ -217,7 +287,7 @@ async function openNote($: EngineInterface, options: Options, id: string, isFres
   const known = notes.get(id)
   if (known && !isFresh && now - known.at < CACHE_MS) {
     const { note: kept } = known
-    await update($, note, () => kept)
+    await write($, 'note', () => kept)
     return
   }
   const opened = await attempt($, async (): Promise<OpenNote> => {
@@ -233,7 +303,7 @@ async function openNote($: EngineInterface, options: Options, id: string, isFres
   })
   if (opened === undefined) return
   notes.set(id, { note: opened, at: now })
-  await update($, note, () => opened)
+  await write($, 'note', () => opened)
 }
 
 async function createNote($: EngineInterface, options: Options, body: string): Promise<{ id: string; title: string } | undefined> {
@@ -250,7 +320,7 @@ async function compose($: EngineInterface, options: Options, body: string): Prom
   if (text === '') return
   const made = await createNote($, options, text)
   if (made === undefined) return
-  await update($, isComposing, () => false)
+  await write($, 'isComposing', () => false)
   $.ui.toast(`Saved to InstantNotes: ${made.title}`)
   if (made.id) await openNote($, options, made.id, true)
   else await search($, options, '', true)
@@ -267,17 +337,26 @@ export const register: Register = (on, options: Options) => {
     mcpIsDown = false
     notes.clear()
     recent = null
-    await update($, source, () => null)
+    await write($, 'source', () => null)
     await $.command.register({ name: 'notes', description: 'Your InstantNotes in a pane (/notes [words])', immediate: true })
     await $.command.register({ name: 'note', description: 'Capture a note to InstantNotes (/note <text>)', immediate: true })
+    await reseed($)
 
     return next(e)
+  })
+
+  // /clear: the pane stays up, so what it shows is written back as soon as the host's state is
+  // the new session's (now, or from the next event if that comes later).
+  on('session.end', async ($, e, next) => {
+    const result = await next(e)
+    if (e.reason === 'clear') await reseed($).catch(() => {})
+    return result
   })
 
   on('command.run', { command: 'notes' }, async ($, e) => {
     const opened = await openPane($)
     await search($, options, e.args)
-    const from = await read($, source)
+    const from = (await read($, snapshot)).source
     const how = from?.kind === 'mcp' ? ' (through the instantnotes MCP server)' : ''
     return { text: `InstantNotes pane opened${how}.${opened.isPlaced ? '' : ' Widen the terminal to see it.'}` }
   })
@@ -289,7 +368,7 @@ export const register: Register = (on, options: Options) => {
     }
     const made = await createNote($, options, text)
     if (made === undefined) {
-      const trouble = await read($, problem)
+      const trouble = (await read($, snapshot)).problem
       return { text: `InstantNotes could not save it: ${trouble?.message ?? 'unknown error'}` }
     }
     $.ui.toast(`Saved to InstantNotes: ${made.title}`)
@@ -303,10 +382,10 @@ export const register: Register = (on, options: Options) => {
     const width = Math.max(24, e.props.bodyColumns)
     const isNarrow = width < NARROW
     const rule = <Text dimColor>{'─'.repeat(width)}</Text>
-    const opened = await read($, note)
-    const trouble = await read($, problem)
-    const busy = await read($, isBusy)
-    const from = await read($, source)
+    // Drawn from what this process kept after a /clear; the host gets it back off the render.
+    if (!(await read($, seeded))) $.clock.after(0, () => void reseed($).catch(() => {}))
+    const snap = await read($, snapshot)
+    const { note: opened, problem: trouble, isBusy: busy, source: from } = snap
     const now = await $.clock.now()
 
     const status = busy ? (
@@ -331,7 +410,7 @@ export const register: Register = (on, options: Options) => {
       return (
         <Box flexDirection="column">
           <Box gap={1} flexWrap="wrap">
-            <Button key="back" plain hotkey="b" label="‹ notes" onPress={() => update($, note, () => null)} />
+            <Button key="back" plain hotkey="b" label="‹ notes" onPress={() => write($, 'note', () => null)} />
             <Button
               key="ask"
               plain
@@ -378,10 +457,7 @@ export const register: Register = (on, options: Options) => {
       )
     }
 
-    const list = await read($, hits)
-    const ran = await read($, query)
-    const typing = await read($, typed)
-    const composing = await read($, isComposing)
+    const { hits: list, query: ran, typed: typing, isComposing: composing } = snap
     const shown = typing !== ran ? filterHits(list, typing) : list
     const isFiltering = typing !== ran && typing.trim() !== ''
 
@@ -395,7 +471,7 @@ export const register: Register = (on, options: Options) => {
           value={typing}
           autoFocus={composing ? undefined : true}
           submitLabel="search"
-          onInput={value => void update($, typed, () => value)}
+          onInput={value => void write($, 'typed', () => value)}
           onSubmit={value => void search($, options, value)}
         />
       )
@@ -419,7 +495,7 @@ export const register: Register = (on, options: Options) => {
             <Text dimColor wrap="truncate-start">{from === null ? '' : from.kind === 'mcp' ? 'via MCP server' : `via ${from.argv[0]}`}</Text>
           </Box>
           {Field && (
-            <Button key="new" plain label={composing ? 'cancel' : isNarrow ? '+ new' : '+ new note'} onPress={() => update($, isComposing, was => !was)} />
+            <Button key="new" plain label={composing ? 'cancel' : isNarrow ? '+ new' : '+ new note'} onPress={() => write($, 'isComposing', was => !was)} />
           )}
           <Button key="recent" plain label="recent" onPress={() => search($, options, '', true)} />
         </Box>

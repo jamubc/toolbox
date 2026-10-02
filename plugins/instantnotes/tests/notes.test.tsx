@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { ago, argvFor, clipBody, filterHits, launchFromConfig, titleOf } from '../hooks/library'
@@ -46,6 +47,7 @@ type World = {
   // Programs that exist, by absolute path; a bare name runs when `onPath`.
   binaries: Set<string>
   onPath: boolean
+  clock?: ReturnType<typeof mock.clock>
 }
 
 /** Stands in for the Mac beneath the plugin: files, the MCP server, and `instantnotes mcp`. */
@@ -91,7 +93,7 @@ function fakeMac(on: On, setup: Partial<World> = {}): World {
   on('ui.toast', async () => ({ value: undefined }))
   on('ui.copy', async () => ({ value: { isCopied: true } }) as never)
   on('prompt.fill', async () => ({ value: { isFilled: true } }) as never)
-  mock.clock(on, { now: Date.parse('2026-10-02T12:00:00Z') })
+  world.clock = mock.clock(on, { now: Date.parse('2026-10-02T12:00:00Z') })
   mock.env(on, { HOME: '/Users/jam' })
   return world
 }
@@ -246,4 +248,50 @@ describe('the helpers', () => {
     expect(ago('2026-01-01T00:00:00Z', now)).toBe('2026-01-01')
     expect(ago('nope', now)).toBe('')
   })
+})
+
+/**
+ * What /clear does to a plugin: the session ends and a new one begins in the same process, so the
+ * host's `$.state` reads as never written while the module and its pane live on. From the mark,
+ * every read answers "never written" until the plugin writes that key again; through `next`, so
+ * the drawing that read the key is still redrawn when it is written.
+ */
+function clearSession(on: On) {
+  let isCleared = false
+  const written = new Set<string>()
+  on('state.get', async (_$, e, next) => {
+    const got = await next(e)
+    return (isCleared && !written.has(e.key) ? { value: { value: undefined, version: 0 } } : got) as never
+  })
+  on('state.set', (_$, e, next) => {
+    if (isCleared) written.add(e.key)
+    return next(e)
+  })
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+  return async ($: Engine) => {
+    await ($ as any).session.end({ reason: 'clear', sessionId: 'before', resume: { id: 'before' } })
+    isCleared = true
+    written.clear()
+  }
+}
+
+test('after /clear the open note and the search stay in the pane', { options: { db: '/tmp/lib.db' } }, async ($, on) => {
+  const clear = clearSession(on)
+  const clock = fakeMac(on).clock!
+  await start($)
+  const ui = await $.ui.mount({ plugin: 'instantnotes', surface: 'terminal', ...PANE })
+  await ui.input({ key: 'query', text: 'CachyOS/Arch' })
+  await ui.press({ key: `hit-${NOTE.id}` })
+  expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe(NOTE.body)
+  await ui.unmount()
+
+  await clear($)
+  const after = await $.ui.mount({ plugin: 'instantnotes', surface: 'terminal', ...PANE })
+  expect((await after.find({ type: 'Markdown' }))?.props.text).toBe(NOTE.body)
+  await clock.advance(1)
+  await after.press({ key: 'back' })
+  expect(await after.find({ type: 'Markdown' })).toBeUndefined()
+  expect((await after.find({ key: 'query' }))?.props).toMatchObject({ value: 'CachyOS/Arch' })
+  expect((await after.find({ key: `hit-${NOTE.id}` }))?.text).toContain(NOTE.title)
+  await after.unmount()
 })

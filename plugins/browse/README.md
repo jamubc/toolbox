@@ -61,6 +61,7 @@ Install the plugin:
 - `hooks/register.tsx` draws the pane, answers `/browse`, and forwards the wheel.
 - `hooks/pointer.tsx` lies over the picture and passes on clicks and keys.
 - Closing the pane, a hot reload, or Claude Code exiting stops the browser. If Claude Code is killed, the helper notices within two seconds and stops Chrome.
+- `/clear` and `/compact` leave the page up: `/clear` starts a new session in the same process, so the pane keeps what it was showing and writes it into the new one.
 
 </details>
 

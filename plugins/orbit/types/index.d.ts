@@ -96,6 +96,8 @@ declare module 'claude-code' {
       ask: OrbitAsk | null
       /** `image` or `cells`: how the globe is drawn in this terminal. */
       renderer: 'image' | 'cells'
+      /** True once this session's values are written; false after a /clear empties them. */
+      seeded: boolean
     }
   }
 }

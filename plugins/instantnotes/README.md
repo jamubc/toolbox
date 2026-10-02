@@ -64,6 +64,7 @@ When none of these can start, the pane says so and lists the steps.
 - `hooks/register.tsx` draws the pane and answers `/notes` and `/note`.
 - `hooks/library.ts` finds the program and library from your configuration, and shapes text for the pane.
 - Each request is one MCP `tools/call`, through the connected server or one `instantnotes mcp` process, so the plugin follows the same rules as any agent.
+- `/clear` and `/compact` leave the search and the open note in the pane.
 
 </details>
 

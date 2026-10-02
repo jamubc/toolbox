@@ -64,6 +64,8 @@ declare module 'claude-code' {
       git: Record<string, GitMark>
       /** Whether this terminal draws real pixels, for picture previews. */
       hasPixels: boolean
+      /** True once this session's values are written; false after a /clear empties them. */
+      seeded: boolean
     }
   }
 }

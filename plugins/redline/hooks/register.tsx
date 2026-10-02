@@ -2,9 +2,10 @@
 // terminals are working. `/redline` opens a pane with a larger gauge and every session.
 //
 // The render hooks mount Rasters; one 10 fps timer steps the needle and repaints them with
-// `$.ui.blit`, with no render pass. Sessions live in `$.state`, so they survive a hot reload.
+// `$.ui.blit`, with no render pass. Sessions live in `$.state`, so they survive a hot reload, and
+// in this module too, so they survive a /clear (which empties `$.state`: see `snapshot`).
 
-import { atom, read, update } from 'claude-code'
+import { atom, derive, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { RedlineSession } from '../types'
@@ -15,10 +16,62 @@ const PANE = 'redline'
 const FPS = 10
 const POLL_MS = 2000
 
-const sessionsRef = { plugin: 'redline', key: 'sessions' } as const
-const sessions = atom(sessionsRef, [] as RedlineSession[])
+const sessions = atom({ plugin: 'redline', key: 'sessions' } as const, [] as RedlineSession[])
 const preview = atom({ plugin: 'redline', key: 'preview' } as const, null as number | null)
 const isPaneOpen = atom({ plugin: 'redline', key: 'isPaneOpen' } as const, false)
+const seeded = atom({ plugin: 'redline', key: 'seeded' } as const, false)
+
+// /clear ends the session but not the process: the host's `$.state` starts over empty while this
+// module, its pane and its timers live on, so read straight from the host there are suddenly no
+// sessions, no preview and no pane. `seeded` is false exactly then, and before the first
+// `session.start`. `snapshot` is what the drawings read, in one go: the host's while `seeded`,
+// else what this process last saw; `write` puts the kept values back before the first change
+// after a /clear, and a render that finds `seeded` false schedules that.
+type Snapshot = { sessions: RedlineSession[]; preview: number | null; isPaneOpen: boolean }
+const KEYS = ['sessions', 'preview', 'isPaneOpen'] as const
+let kept: Snapshot = { sessions: [], preview: null, isPaneOpen: false }
+let wasLive: boolean | null = null // what the last read saw; null before the first
+const snapshot = derive([seeded, sessions, preview, isPaneOpen], (isLive, sessions, preview, isPaneOpen): Snapshot => {
+  wasLive = isLive
+  if (!isLive) return kept
+  kept = { sessions, preview, isPaneOpen }
+  return kept
+})
+
+/** The one place the atoms are written: each key to its own, as the validator asks. */
+async function put<K extends keyof Snapshot>($: EngineInterface, key: K, value: Snapshot[K]): Promise<void> {
+  switch (key) {
+    case 'sessions': await update($, sessions, () => value as Snapshot['sessions']); break
+    case 'preview': await update($, preview, () => value as Snapshot['preview']); break
+    case 'isPaneOpen': await update($, isPaneOpen, () => value as Snapshot['isPaneOpen']); break
+  }
+}
+
+/** After a /clear (or at the first start), writes what this process kept back to the host. */
+let reseeding: Promise<void> | null = null
+function reseed($: EngineInterface): Promise<void> {
+  reseeding ??= (async () => {
+    try {
+      if (await read($, seeded)) return
+      for (const key of KEYS) await put($, key, kept[key])
+      await update($, seeded, () => true)
+      wasLive = true
+    } finally {
+      reseeding = null
+    }
+  })()
+  return reseeding
+}
+
+/** Changes one value from what `snapshot` reads, and keeps it here too. */
+async function write<K extends keyof Snapshot>($: EngineInterface, key: K, change: (now: Snapshot[K]) => Snapshot[K]): Promise<void> {
+  // `kept` is current once a read has seen the host live: only this module writes these values.
+  if (wasLive === null) await read($, snapshot)
+  if (!wasLive) await reseed($)
+  const next = change(kept[key])
+  kept = { ...kept, [key]: next }
+  await put($, key, next)
+}
 
 type View = { requestId: string; face: Face }
 
@@ -72,10 +125,10 @@ async function poll($: EngineInterface): Promise<void> {
   }
   if (self === null) self = await findSelf($)
 
-  const before = (await $.state.get(sessionsRef)).value
-  if (before && JSON.stringify(before) === JSON.stringify(found)) return
-  await update($, sessions, () => found)
-  show($, found, await read($, preview))
+  const before = await read($, snapshot)
+  if (JSON.stringify(before.sessions) === JSON.stringify(found)) return
+  await write($, 'sessions', () => found)
+  show($, found, before.preview)
 }
 
 /** The shell prints its pid, then `exec`s `ps` under that same pid, so the table holds the way up. */
@@ -95,9 +148,11 @@ export const register: Register = (on, options) => {
       name: 'redline',
       description: `Show your Claude sessions; /redline <0-${SCALE}> previews a count, /redline live follows again`,
     })
-    show($, await read($, sessions), await read($, preview))
+    await reseed($)
+    const now = await read($, snapshot)
+    show($, now.sessions, now.preview)
     const isOpen = (await $.ui.panes()).some(p => p.id === PANE)
-    await update($, isPaneOpen, () => isOpen)
+    await write($, 'isPaneOpen', () => isOpen)
 
     $.clock.every(1000 / FPS, () => void frame($).catch(() => {}))
     if (e.isInteractive) {
@@ -108,43 +163,53 @@ export const register: Register = (on, options) => {
     return result
   })
 
+  // /clear: the pane and the band stay up, so what they show is written back as soon as the
+  // host's state is the new session's (now, or from the next event if that comes later).
+  on('session.end', async ($, e, next) => {
+    const result = await next(e)
+    if (e.reason === 'clear') await reseed($).catch(() => {})
+    return result
+  })
+
   on('command.run', { command: 'redline' }, async ($, e) => {
+    await reseed($)
     const arg = e.args.trim()
     if (arg === 'live') {
-      await update($, preview, () => null)
-      show($, await read($, sessions), null)
+      await write($, 'preview', () => null)
+      show($, (await read($, snapshot)).sessions, null)
       return { text: 'Following your sessions again.' }
     }
     if (/^\d+$/.test(arg)) {
       const count = Math.min(Number(arg), SCALE)
-      await update($, preview, () => count)
-      show($, await read($, sessions), count)
+      await write($, 'preview', () => count)
+      show($, (await read($, snapshot)).sessions, count)
       return { text: `Previewing ${count} working: ${stageFor(count).name}. /redline live to follow your sessions again.` }
     }
     if (arg !== '') return { text: `Usage: /redline, /redline <0-${SCALE}>, /redline live` }
 
-    if (await read($, isPaneOpen)) {
+    if ((await read($, snapshot)).isPaneOpen) {
       await $.ui.close({ id: PANE })
       return { text: 'Redline closed.' }
     }
     const opened = await $.ui.open({ id: PANE, title: 'Redline', rows: LARGE.rows + 12 })
-    await update($, isPaneOpen, () => true)
+    await write($, 'isPaneOpen', () => true)
     return { text: opened.isPlaced ? 'Redline opened.' : 'Redline opened; widen the terminal to see it.' }
   })
 
   on('ui.close', async ($, e, next) => {
     const result = await next(e)
-    if (e.id === PANE) await update($, isPaneOpen, () => false)
+    if (e.id === PANE) await write($, 'isPaneOpen', () => false)
     return result
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey || (await read($, isPaneOpen))) {
+    // Drawn from what this process kept after a /clear; the host gets it back off the render.
+    if (!(await read($, seeded))) $.clock.after(0, () => void reseed($).catch(() => {}))
+    const { sessions: all, preview: previewing, isPaneOpen: isOpen } = await read($, snapshot)
+    if (e.props.hasSurvey || isOpen) {
       views = views.filter(v => v.requestId !== e.requestId)
       return next(e)
     }
-    const all = await read($, sessions)
-    const previewing = await read($, preview)
     const shown = previewing ?? workingIn(all)
     const stage = stageFor(shown)
     const count = previewing === null ? tally(all) : 'preview · /redline live'
@@ -168,8 +233,8 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const all = await read($, sessions)
-    const previewing = await read($, preview)
+    if (!(await read($, seeded))) $.clock.after(0, () => void reseed($).catch(() => {}))
+    const { sessions: all, preview: previewing } = await read($, snapshot)
     const shown = previewing ?? workingIn(all)
     const stage = stageFor(shown)
     const { Box, Text } = $.ui.resolve(e)

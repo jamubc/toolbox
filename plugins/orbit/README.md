@@ -74,6 +74,8 @@ Your own location is manual first (`/config` → Your location). `/orbit locate`
 
 `/orbit check` says which of these apply on your machine.
 
+`/clear` and `/compact` leave the pane, the trace and your rules where they were: `/clear` starts a new session in the same process, and orbit writes what it was showing into it.
+
 - **Needs** nothing for the tool and process layers on macOS. On Linux, `ss` from iproute2 (nearly always there). Node.js for the geo helper and the proxy.
 - One Claude Code session is found by walking `ps` from the shell it runs in; if that fails `/orbit check` says so and only the tool layer records.
 - Processes a tool started and left running (a dev server) stay in the tree and keep tracing until they exit.

@@ -31,6 +31,8 @@ declare module 'claude-code' {
       /** The composer for a new note is open in the list view. */
       isComposing: boolean
       source: Source
+      /** True once this session's values are written; false after a /clear empties them. */
+      seeded: boolean
     }
   }
 }
