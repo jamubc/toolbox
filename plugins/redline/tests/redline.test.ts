@@ -21,7 +21,7 @@ const PS = `
 25341     1 ??       /opt/homebrew/bin/python3 server.py
 `
 
-const LSOF = ['p94901', 'fcwd', 'n/Users/jam/OpenCAD', 'p15621', 'fcwd', 'n/Users/jam/terminal-toys', 'p80793', 'fcwd', 'n/Users/jam/jamcli'].join('\n')
+const LSOF = ['p94901', 'fcwd', 'n/Users/jam/OpenCAD', 'p15621', 'fcwd', 'n/Users/jam/toolbox', 'p80793', 'fcwd', 'n/Users/jam/jamcli'].join('\n')
 
 // What `sh -c 'echo $$; exec ps …'` prints when this session is the one on ttys010.
 const SH = `70001\n${PS}70001 15621 ttys010  ps -x -o pid=,ppid=,tty=,args=\n`
@@ -83,7 +83,7 @@ describe('census', () => {
   })
 
   test('reads working directories from lsof', async () => {
-    expect(cwdsIn(LSOF).get(15621)).toBe('/Users/jam/terminal-toys')
+    expect(cwdsIn(LSOF).get(15621)).toBe('/Users/jam/toolbox')
     expect(cwdsIn(LSOF).has(38136)).toBe(false)
   })
 
@@ -178,7 +178,7 @@ describe('mod', () => {
 
     const ui = await $.ui.mount(pane('terminal'))
     expect(await ui.find({ type: 'Raster', key: 'gauge' } as any)).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /● ttys010 +terminal-toys {2}\(this one\)/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /● ttys010 +toolbox {2}\(this one\)/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /○ ttys001 +OpenCAD/ })).toBeDefined()
     await ui.unmount()
 

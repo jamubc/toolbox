@@ -1,0 +1,9 @@
+{
+  "name": "backchannel",
+  "version": "0.2.0",
+  "description": "Your iMessages in a pane beside Claude Code: read, reply, and get a toast when someone texts you.",
+  "author": { "name": "jamubc" },
+  "repository": "https://github.com/jamubc/toolbox",
+  "license": "MIT",
+  "keywords": ["mod", "imessage", "messages", "chat", "pane"]
+}

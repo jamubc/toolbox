@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "A turbo boost gauge above your prompt: the more of your Claude sessions are working, the higher the needle.",
   "author": { "name": "jamubc" },
-  "repository": "https://github.com/jamubc/terminal-toys",
+  "repository": "https://github.com/jamubc/toolbox",
   "license": "MIT",
   "keywords": ["mod", "gauge", "sessions", "status"],
   "types": "./types/index.d.ts",

@@ -3,8 +3,8 @@
 A turbo boost gauge above your Claude Code prompt. The needle reads how many Claude sessions in your terminals are working right now, from *Napping* to *Blown* at 25.
 
 ```
-/plugin marketplace add jamubc/terminal-toys
-/plugin install redline@jam
+/plugin marketplace add jamubc/toolbox
+/plugin install redline@toolbox
 ```
 
 ## Use
