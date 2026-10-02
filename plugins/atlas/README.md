@@ -2,6 +2,8 @@
 
 A file explorer in a pane beside Claude Code. Browse a tree explorer, find properties, and modify without leaving Claude Code.
 
+![Claude Code with the atlas pane docked on the right: a small TypeScript project with src and lib open, forecast.ts selected, and its properties, actions and colored source beside the Claude prompt](docs/screenshot.png)
+
 
 ## Install
 

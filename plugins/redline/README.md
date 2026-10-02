@@ -2,6 +2,8 @@
 
 Too many Claudes going at once? Feeling overwhelemed? redline puts a guage into claude so you can plan your time better.
 
+![The redline band above the Claude Code prompt in preview at 18 sessions: a dotted turbo gauge with its needle in the red, labeled Redline, Needle in the red.](docs/screenshot.png)
+
 ***stop starting new Claudes and finish the ones already running.***
 
 ## Install

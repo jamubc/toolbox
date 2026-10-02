@@ -2,6 +2,8 @@
 
 A Claude Code web browser.
 
+![The browse pane beside the Claude Code prompt, showing the Wikipedia article on terminal emulators in real pixels in Ghostty after /browse](docs/screenshot.png)
+
 ## Install
 
 Add the marketplace:

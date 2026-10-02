@@ -35,6 +35,9 @@ const SIPS = '/usr/bin/sips'
 const SHARP = 1600
 const BLOCKS = 200
 const OFFERED_FILES = 5
+// The pane's share of the terminal when docked, and the least it takes.
+const SIDEBAR = 0.36
+const MIN_COLUMNS = 44
 // What Claude's reply is cut to as a chat draft.
 const DRAFT = 2000
 
@@ -175,8 +178,10 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'channel' }, async $ => {
-    await $.ui.open({ id: PANE, title: 'Chats', focus: true })
+  on('command.run', { command: 'channel' }, async ($, e) => {
+    // A sidebar: a third of the terminal, so Claude keeps most of the width.
+    const columns = Math.max(MIN_COLUMNS, Math.round(e.presentation.columns * SIDEBAR))
+    await $.ui.open({ id: PANE, title: 'Chats', focus: true, columns })
     await hub?.attend()
 
     return { text: 'channel opened.' }

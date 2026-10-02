@@ -2,6 +2,8 @@
 
 Your favourite chat, directly in Claude Code. Read, reply, get notified and more, without leaving the terminal.
 
+![Claude Code with a haiku conversation on the left and the channel pane docked on the right, showing an iMessage group chat with messages from three people, a shared beach photo, a heart tapback, and the reply box](docs/screenshot.png)
+
 ***It can all be done, inside Claude Code***
 
 ## Install

@@ -2,6 +2,8 @@
 
 Your [InstantNotes](https://github.com/Jam-Sw/InstantNotes) library, directly in Claude Code. Search, read and capture notes without leaving the terminal.
 
+![The InstantNotes pane in Claude Code after /notes: a search field above four recent notes (Weekend pancakes, Grocery list, Trip ideas, Book notes), each with a one-line excerpt](docs/screenshot.png)
+
 ***Every note you have, one command away.***
 
 ## Install
