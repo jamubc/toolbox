@@ -1,0 +1,24 @@
+{
+  "name": "atlas",
+  "version": "0.1.0",
+  "description": "Adds /atlas: a file explorer in a pane beside Claude Code. Open a file to edit it in micro.",
+  "author": { "name": "jamubc" },
+  "repository": "https://github.com/jamubc/toolbox",
+  "license": "MIT",
+  "keywords": ["mod", "files", "explorer", "editor", "micro", "pane"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "editor": {
+      "type": "string",
+      "title": "Editor",
+      "description": "The terminal editor that opens files, a path or a name on PATH: micro, nano, vim, hx...",
+      "default": "micro"
+    },
+    "python": {
+      "type": "string",
+      "title": "Python",
+      "description": "The python3 (3.9 or later) that hosts the editor, a path or a name on PATH.",
+      "default": "python3"
+    }
+  }
+}

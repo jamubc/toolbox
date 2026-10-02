@@ -1,0 +1,97 @@
+# atlas
+
+A file explorer in a pane beside Claude Code. Browse a tree explorer, find properties, and modify without leaving Claude Code.
+
+
+## Install
+
+Add the marketplace:
+
+```
+/plugin marketplace add jamubc/toolbox
+```
+
+Install the plugin:
+
+```
+/plugin install atlas@toolbox
+```
+
+## Usage
+
+| Command | function |
+| --- | --- |
+| `/atlas` | Opens the explorer on the folder Claude Code started in. |
+| `/atlas <folder>` | Opens the explorer there. |
+| `/atlas <file>` | Shows the file in the tree and opens it in micro. |
+| Click a folder | Opens or closes it. |
+| Click a file | Shows its Properties and Source. |
+| Find | Type part of a name and press Enter; click a hit to reveal it in the tree. |
+| Key | Action |
+| `e` | Edit in [micro](https://micro-editor.github.io) |
+| `p` | Add the file to your prompt as `@path` |
+| `c` | Copy the path |
+| `r` / `d` | Rename / duplicate |
+| `x` | Move to the Trash, after you confirm |
+| `n` / `f` | New file / new folder, in the selected folder |
+| `o` | Open the selected folder as the root |
+| `u` / `g` | Go up a folder / refresh |
+
+### In the editor
+
+micro runs for real inside the pane: your own micro settings, colors and plugins.
+
+- **Click the text to type.** Claude Code only hands keys to the editor after a click, and **Esc** gives them back to the prompt.
+- **Ctrl+S** saves, **Ctrl+Q** quits back to the explorer, and most other keys reach micro.
+- Claude Code keeps **Ctrl+C**, **Ctrl+Z** and **Ctrl+O** for itself, and **Esc** returns the keys, so the header has **Esc**, **Copy** and **Undo** buttons that send them to micro. Don't press Ctrl+Z: it suspends Claude Code.
+- Pasting with your terminal goes to the Claude prompt. Use micro's **Ctrl+V**, which reads the clipboard.
+- The pane won't close while micro is open: quit with Ctrl+Q so micro can ask about unsaved changes.
+- `/config` → Editor runs another terminal editor instead: `nano` and `vim` work too.
+
+## Compatibility
+
+| Where | Explorer | Editor |
+| --- | --- | --- |
+| Claude Code in any terminal | Yes | Yes |
+| Claude desktop app, VS Code extension | Yes | No. |
+| Mobile | Yes, without Find or naming fields | No |
+
+| System | Status |
+| --- | --- |
+| macOS | Tested: browsing, Find, rename, new, duplicate, Trash, editing in micro. |
+| Linux | Should work; untested. Trash needs `gio`. |
+| Windows | Not supported. Editing says so, and paths assume `/`. |
+
+- **Needs** Python 3.9 or later (macOS's own `/usr/bin/python3` works) and micro, or the editor you set. If one is missing, the pane says which and how to fix it.
+- Wide characters (CJK, emoji) show as `?` in the editor; the file itself is untouched.
+
+<details>
+<summary>Safety</summary>
+
+<br>
+
+- **Trash, never delete.** It uses macOS's `trash` or Linux's `gio trash`, after a confirmation. If neither exists, nothing is deleted.
+- **No overwrites.** Rename, new file, new folder and duplicate refuse a name that already exists, and names cannot contain `/` or be `..`.
+- **Unsaved edits.** If Claude Code exits or is killed, or atlas reloads, while micro is open, micro closes and keeps a backup. Reopen the file and micro offers to recover it.
+
+</details>
+
+<details>
+<summary>Functions</summary>
+
+<br>
+
+- `hooks/register.tsx` draws the pane, answers `/atlas`, and runs the actions.
+- `hooks/files.ts` holds the path, file class and tree helpers.
+- `editor/term.py` runs the editor in a pseudo-terminal, keeps its screen with a small terminal emulator, and streams it to the pane. Keys and clicks come back over a Unix socket in a private temp folder.
+- `hooks/terminal.tsx` lies over the editor's picture and passes on keys, clicks and drags.
+
+</details>
+
+<details>
+<summary>Privacy</summary>
+
+- Nothing reaches Claude unless you press **Add to prompt**, or open a path with `/atlas`, whose reply names the folder.
+- Everything runs locally: no network.
+
+</details>
