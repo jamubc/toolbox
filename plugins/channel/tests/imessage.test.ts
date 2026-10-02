@@ -1,120 +1,40 @@
-import { expect, mock, test } from 'claude-code/testing'
-import type { Engine } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import { expect, test } from 'claude-code/testing'
 
-import { guardRun } from '../hooks/providers/chat'
-import { attributedText } from '../hooks/providers/imessage'
+import type { Settings, Tools, Update } from '../hooks/core/contract'
+import { fence } from '../hooks/core/fence'
+import { attributedText, foldTaps, imessage } from '../hooks/providers/imessage'
+import { conformance } from './kit/conformance'
+import { ANA, BEN, PNG, guidOf, messagesApp, row, streamtyped } from './kit/mac'
 
-// Invented data only: 555-01xx numbers are reserved for fiction.
-const ANA = '+15555550101'
-const PANE_PROPS = {
-  title: 'iMessage',
-  isFocused: true,
-  bodyColumns: 60,
-  placement: 'dock' as const,
-  scroll: { offset: 0, bodyRows: 20 },
-  view: {},
-}
-const SURFACES = ['terminal', 'desktop'] as const
-// 2026-01-01 in Apple's nanoseconds since 2001.
-const DATE = (1_767_225_600_000 - 978_307_200_000) * 1e6
+const SETTINGS: Settings = { home: '/Users/someone', app: 'Ghostty', surface: 'terminal', options: {} }
 
-// An archived NSAttributedString as Messages writes it, holding `text`.
-function streamtyped(text: string): string {
-  const utf8 = [...new TextEncoder().encode(text)]
-  const length = utf8.length < 0x80 ? [utf8.length] : [0x81, utf8.length & 0xff, utf8.length >> 8]
-  const bytes = [
-    0x04, 0x0b, ...new TextEncoder().encode('streamtyped'), 0x81, 0xe8, 0x03, 0x84, 0x01, 0x40, 0x84, 0x84, 0x84,
-    0x12, ...new TextEncoder().encode('NSAttributedString'), 0x00, 0x84, 0x84, 0x08,
-    ...new TextEncoder().encode('NSObject'), 0x00, 0x85, 0x92, 0x84, 0x84, 0x84, 0x08,
-    ...new TextEncoder().encode('NSString'), 0x01, 0x94, 0x84, 0x01, 0x2b, ...length, ...utf8, 0x86,
-  ]
-  return bytes.map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase()
-}
-
-type Row = { id: number; conversation: number; date: number; fromMe: number; handle: string | null; text: string | null; body: string | null; attachments: number }
-
-function row(id: number, conversation: number, fields: Partial<Row>): Row {
-  return { id, conversation, date: DATE, fromMe: 0, handle: ANA, text: null, body: null, attachments: 0, ...fields }
-}
-
-// A fake Messages database and Messages app beneath the plugin.
-function mac(on: On) {
-  const clock = mock.clock(on, { now: 1_767_225_600_000 })
-  mock.env(on, { HOME: '/Users/someone', TERM_PROGRAM: 'ghostty' })
-  const runs: (readonly string[])[] = []
-  const toasts: string[] = []
-  const statuses: (string | undefined)[] = []
-  const rows: Row[] = [
-    row(10, 1, { body: streamtyped('see you at six') }),
-    row(11, 1, { fromMe: 1, handle: null, text: 'on my way' }),
-    row(12, 2, { handle: '+15555550102', text: null, attachments: 1, body: streamtyped('￼') }),
-  ]
-  const chats = [
-    { id: 1, guid: `any;-;${ANA}`, name: null, people: ANA, ident: ANA },
-    { id: 2, guid: 'any;+;chat000000000000000001', name: 'Book club', people: '+15555550102, +15555550103', ident: 'chat000000000000000001' },
-  ]
-  let access = true
-  let panes: { id: string; title: string; isShown: boolean; isFocused: boolean; isPlaced: boolean }[] = []
-  const json = (value: unknown[]) => ({ value: { exitCode: 0, stdout: value.length ? JSON.stringify(value) : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-
-  on('process.run', (_$, e) => {
-    runs.push(e.argv)
-    if (e.argv[0] === '/usr/bin/osascript') {
-      return json([])
-    }
-    if (!access) {
-      return { value: { exitCode: 1, stdout: '', stderr: 'Error: unable to open database "/Users/someone/Library/Messages/chat.db": authorization denied', isStdoutTruncated: false, isStderrTruncated: false } }
-    }
-    const sql = e.argv[4] ?? ''
-    if (sql.includes('MAX(ROWID) id FROM message')) {
-      return json([{ id: Math.max(...rows.map(one => one.id)) }])
-    }
-    if (sql.includes('GROUP BY c.ROWID')) {
-      return json(chats)
-    }
-    const inChat = /cmj\.chat_id = (\d+)/.exec(sql)
-    if (inChat) {
-      return json(rows.filter(one => one.conversation === Number(inChat[1])).reverse())
-    }
-    const after = /m\.ROWID > (\d+)/.exec(sql)
-    if (after) {
-      return json(rows.filter(one => one.id > Number(after[1])))
-    }
-    return json([])
-  })
-  on('ui.toast', (_$, e) => {
-    toasts.push(e.text)
-    return { value: undefined }
-  })
-  on('ui.status', (_$, e) => {
-    statuses.push(e.text)
-    return { value: undefined }
-  })
-  on('ui.panes', () => ({ value: panes }))
-  on('ui.open', (_$, e) => {
-    panes = [{ id: e.id, title: e.title ?? e.id, isShown: true, isFocused: false, isPlaced: true }]
-    return { value: { isPlaced: true as const } }
-  })
-  on('command.register', (_$, e) => ({ value: { command: e.name } }))
-  on('session.start', (_$, e) => ({ cwd: e.cwd }))
-
-  return {
-    clock,
-    runs,
-    toasts,
-    statuses,
-    receive: (one: Row) => rows.push(one),
-    revokeAccess: () => (access = false),
+// The provider over the fake Mac, with no engine between.
+function connected() {
+  const app = messagesApp()
+  const raw: Tools = {
+    run: async argv => app.answer(argv),
+    fetch: async () => ({ status: 200, ok: true, headers: {}, text: '' }),
+    async *spawn() {},
   }
+  const tools = fence(imessage.reach, raw)
+
+  return { app, raw, tools, chat: imessage.connect(tools, SETTINGS) }
 }
 
-async function start($: Engine) {
-  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+async function news(chat: ReturnType<typeof connected>['chat'], cursor: string): Promise<{ updates: Update[]; cursor: string }> {
+  if (chat.feed.kind !== 'polled') {
+    throw new Error('iMessage is polled')
+  }
+
+  return chat.feed.since(cursor)
 }
 
-async function openPane($: Engine) {
-  await $.command.run({ command: 'channel', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } })
+async function start(chat: ReturnType<typeof connected>['chat']): Promise<string> {
+  if (chat.feed.kind !== 'polled') {
+    throw new Error('iMessage is polled')
+  }
+
+  return (await chat.feed.since(undefined)).cursor
 }
 
 test('attributedBody text decodes, short and long', () => {
@@ -124,80 +44,131 @@ test('attributedBody text decodes, short and long', () => {
   expect(attributedText('00FF')).toBe(null)
 })
 
-test('the pane lists conversations, and a press opens one with its history', async ($, on) => {
-  const m = mac(on)
-  await start($)
-  await m.clock.settle()
+test('iMessage passes the conformance every provider must', async () => {
+  const { raw } = connected()
 
-  for (const surface of SURFACES) {
-    const ui = await $.ui.mount({ plugin: 'channel', surface, component: 'Pane', props: PANE_PROPS, requestId: 'channel' })
-    expect((await ui.find({ key: 'open-2' }))?.text).toBe('Book club')
-    expect(await ui.find({ type: 'Button', text: /Book club/ })).toBeDefined()
-    await ui.press({ key: 'open-1' })
-    expect(await ui.find({ text: /see you at six/ })).toBeDefined()
-    expect(await ui.find({ text: /on my way/ })).toBeDefined()
-    await ui.press({ key: 'back' })
-    await ui.press({ key: 'open-2' })
-    expect(await ui.find({ text: /\[attachment\]/ })).toBeDefined()
-    await ui.press({ key: 'back' })
-    await ui.unmount()
-  }
-  // Read-only, and never through a shell.
-  for (const argv of m.runs) {
+  expect(await conformance(imessage, raw, SETTINGS)).toEqual([])
+})
+
+test('it reads only through sqlite3, read-only, and never through a shell', async () => {
+  const { app, chat } = connected()
+  await chat.conversations()
+  await chat.history('1')
+  await news(chat, await start(chat))
+
+  for (const argv of app.runs) {
     expect(argv.slice(0, 3)).toEqual(['/usr/bin/sqlite3', '-readonly', '-json'])
   }
 })
 
-test('a new message while the pane is closed toasts and counts; my own does not', async ($, on) => {
-  const m = mac(on)
-  await start($)
-  await m.clock.settle()
-  expect(m.toasts).toEqual([])
+test('history carries text, the reply it answers, and tapbacks', async () => {
+  const { chat } = connected()
+  const [first, second] = await chat.history('1')
 
-  m.receive(row(13, 2, { handle: '+15555550103', text: 'chapter 4 tonight?' }))
-  m.receive(row(14, 1, { fromMe: 1, handle: null, text: 'sent from my phone' }))
-  await m.clock.advance(10_000)
-
-  expect(m.toasts).toEqual(['Book club · +15555550103: chapter 4 tonight?'])
-  expect(m.statuses.at(-1)).toBe('iMessage 1 new')
+  expect(first?.parts).toEqual([{ kind: 'text', text: 'see you at six' }])
+  expect(first?.sender).toEqual({ id: ANA, name: ANA, isMe: false })
+  expect(first?.reactions).toEqual([{ emoji: '👍', count: 1, isMine: true }])
+  expect(second?.sender.isMe).toBe(true)
+  expect(second?.replyTo).toBe('10')
 })
 
-test('Enter sends through Messages with the text as an argument, never in the script', async ($, on) => {
-  const m = mac(on)
-  await start($)
-  await m.clock.settle()
-  await openPane($)
+test('an attachment becomes a part, and fetch answers where its file is', async () => {
+  const { chat } = connected()
+  const [only] = await chat.history('2')
 
-  for (const surface of SURFACES) {
-    const ui = await $.ui.mount({ plugin: 'channel', surface, component: 'Pane', props: PANE_PROPS, requestId: 'channel' })
-    await ui.press({ key: 'open-1' })
-    await ui.input({ key: 'reply', text: '  ' })
-    await ui.input({ key: 'reply', text: '-e "quoted" & end tell' })
-    expect((await ui.find({ key: 'reply' }))?.text).toBe('')
-    expect(await ui.find({ text: 'Sent.' })).toBeDefined()
-    await ui.press({ key: 'back' })
-    await ui.unmount()
-  }
+  expect(only?.parts).toEqual([
+    {
+      kind: 'image',
+      name: 'photo.png',
+      mime: 'image/png',
+      bytes: 2048,
+      handle: '7',
+      path: PNG.replace('~', '/Users/someone'),
+    },
+  ])
+  expect(await chat.attachments?.fetch('7')).toEqual({ path: PNG.replace('~', '/Users/someone') })
+  expect(await chat.attachments?.fetch('8').catch(e => e.message)).toBe('that file is not on this Mac')
+})
 
-  const sends = m.runs.filter(argv => argv[0] === '/usr/bin/osascript')
+test('news is new messages, edits, unsends and tapbacks, and the cursor passes them all', async () => {
+  const { app, chat } = connected()
+  await chat.history('1')
+  const cursor = await start(chat)
+  expect(cursor).toBe('13.0')
+
+  app.receive(row(14, 2, { handle: BEN, text: 'chapter 4 tonight?' }))
+  app.rows[0] = { ...row(10, 1, { text: 'see you at seven' }), edited: '900' }
+  app.rows[1] = { ...row(11, 1, { fromMe: 1, handle: null, text: 'on my way' }), retracted: '950' }
+  app.tap({ id: 15, conversation: 1, target: `p:0/${guidOf(10)}`, type: 3001, fromMe: 1, who: null })
+  app.tap({ id: 16, conversation: 1, target: `p:0/${guidOf(10)}`, type: 2000, fromMe: 0, who: 4 })
+
+  const first = await news(chat, cursor)
+  expect(first.cursor).toBe('16.950')
+  expect(first.updates.map(one => one.kind)).toEqual(['message', 'edit', 'delete', 'reaction'])
+  const [arrived, edited, unsent, reacted] = first.updates
+  expect(arrived?.kind === 'message' && arrived.message.parts).toEqual([{ kind: 'text', text: 'chapter 4 tonight?' }])
+  expect(edited?.kind === 'edit' && edited.message.parts).toEqual([{ kind: 'text', text: 'see you at seven' }])
+  expect(edited?.kind === 'edit' && edited.message.editedAt !== undefined).toBe(true)
+  expect(unsent).toEqual({ kind: 'delete', conversation: '1', id: '11' })
+  expect(reacted).toEqual({ kind: 'reaction', conversation: '1', id: '10', reactions: [{ emoji: '❤️', count: 1, isMine: false }] })
+
+  // Nothing since: nothing again.
+  expect(await news(chat, first.cursor)).toEqual({ updates: [], cursor: '16.950' })
+})
+
+test('tapbacks fold to one per person, and a removal clears it', () => {
+  const tap = (id: number, type: number, who: number | null) => ({ id, conversation: 1, target: `p:0/${guidOf(1)}`, type, fromMe: who === null ? 1 : 0, who })
+
+  expect(foldTaps([tap(1, 2001, 4), tap(2, 2001, 5), tap(3, 2003, null), tap(4, 2000, 4), tap(5, 3001, 5)]).get(guidOf(1))).toEqual([
+    { emoji: '❤️', count: 1, isMine: false },
+    { emoji: '😂', count: 1, isMine: true },
+  ])
+})
+
+test('text and a file are sent through Messages as arguments, never inside the script', async () => {
+  const { app, chat } = connected()
+  await chat.conversations()
+
+  await chat.send('1', { text: '-e "quoted" & end tell' })
+  await chat.attachments?.send('1', '~/Desktop/notes.pdf')
+
+  const sends = app.runs.filter(argv => argv[0] === '/usr/bin/osascript')
   expect(sends.length).toBe(2)
   expect(sends[0]?.slice(-2)).toEqual(['x-e "quoted" & end tell', `any;-;${ANA}`])
-  expect(sends[0]?.join(' ')).not.toContain('quoted" & end tell" to')
+  expect(sends[0]?.slice(0, -2).join(' ')).not.toContain('quoted')
+  expect(sends[1]?.slice(-2)).toEqual(['x/Users/someone/Desktop/notes.pdf', `any;-;${ANA}`])
+  expect(sends[1]?.slice(0, -2).join(' ')).toContain('POSIX file')
+
+  expect(await chat.attachments?.send('1', 'notes.pdf').catch(e => e.message)).toBe('give the full path of the file')
+  expect(await chat.send('99', { text: 'hi' }).catch(e => e.message)).toBe('that conversation is gone')
 })
 
-test('without Full Disk Access the pane says how to grant it', async ($, on) => {
-  const m = mac(on)
-  m.revokeAccess()
-  await start($)
-  await m.clock.settle()
+test('members lists who is in a conversation', async () => {
+  const { chat } = connected()
 
-  const ui = await $.ui.mount({ plugin: 'channel', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'channel' })
-  expect(await ui.find({ text: /turn on Ghostty in .*Full Disk Access/ })).toBeDefined()
+  expect((await chat.members?.of('2'))?.map(one => one.id)).toEqual([BEN, '+15555550103'])
 })
 
-test('a provider runs only its own commands', async () => {
-  const run = async () => ({ exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
-  await expect(guardRun(run, ['/usr/bin/sqlite3'])(['/bin/sh', '-c', 'x'])).rejects.toThrow('refused')
-  await expect(guardRun(run, [])(['/usr/bin/sqlite3'])).rejects.toThrow('refused')
-  expect((await guardRun(run, ['/usr/bin/sqlite3'])(['/usr/bin/sqlite3'])).exitCode).toBe(0)
+test('a value that is not a number never reaches a query', async () => {
+  const { app, chat } = connected()
+  const before = app.runs.length
+
+  expect(await chat.history('1; DROP TABLE message').catch(e => e.message)).toBe('conversation must be a number')
+  expect(await news(chat, '1 OR 1=1.0').catch(e => e.message)).toBe('cursor must be a number')
+  expect(app.runs.length).toBe(before)
+})
+
+test('check says ready, off, unavailable, or how to grant Full Disk Access', async () => {
+  const { app, tools } = connected()
+
+  expect(await imessage.check(tools, SETTINGS)).toEqual({ state: 'ready' })
+  expect(await imessage.check(tools, { ...SETTINGS, options: { imessage: false } })).toEqual({ state: 'off' })
+  expect((await imessage.check(tools, { ...SETTINGS, surface: 'desktop' })).state).toBe('unavailable')
+
+  app.revokeAccess()
+  const health = await imessage.check(tools, SETTINGS)
+  expect(health.state).toBe('setup')
+  expect(health.state === 'setup' && health.steps[1]).toBe('Turn on Ghostty (add it with + if it is not listed)')
+  const nameless = await imessage.check(tools, { ...SETTINGS, app: '' })
+  expect(nameless.state === 'setup' && nameless.steps[1]).toContain('the terminal app you run Claude Code in')
 })

@@ -1,9 +1,25 @@
 {
   "name": "channel",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Your chats in a pane beside Claude Code: read, reply, and get a toast when someone messages you. iMessage today, more chat apps to come.",
-  "author": { "name": "jamubc" },
+  "author": {
+    "name": "jamubc"
+  },
   "repository": "https://github.com/jamubc/toolbox",
   "license": "MIT",
-  "keywords": ["mod", "imessage", "messages", "chat", "pane"]
+  "keywords": [
+    "mod",
+    "imessage",
+    "messages",
+    "chat",
+    "pane"
+  ],
+  "userConfig": {
+    "imessage": {
+      "type": "boolean",
+      "title": "iMessage",
+      "description": "Show your iMessage conversations (macOS 13 or later, terminal only)",
+      "default": true
+    }
+  }
 }

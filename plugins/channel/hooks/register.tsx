@@ -1,58 +1,42 @@
-import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
-import { guardRun } from './providers/chat'
-import type { Conversation, Incoming, Provider, ProviderSpec, Settings } from './providers/chat'
-import { imessage } from './providers/imessage'
+import { createHub } from './core/hub'
+import type { Hub } from './core/hub'
+import { services } from './core/registry'
+import { PaneView } from './ui/pane'
+import { decodeBmp } from './ui/picture'
+import type { Picture } from './ui/picture'
 
-// Chat is untrusted input and private: nothing here reaches the model. No
-// session.append, no prompt.submit or prompt.fill, no tool. Messages go to the
-// pane, toasts and the status line only, and a message goes out only on the
-// person's Enter. Message text lives in this module's memory alone, never in
-// $.state (any plugin reads that) or $.store (it outlives the session), and
-// the mod makes no network request.
+// Wiring only: the services run in core/, the pane is drawn in ui/.
+//
+// Chat is untrusted input and private, whichever service it comes from:
+// - Nothing a chat says reaches the model. No session.append, no
+//   prompt.submit, no tool. Messages go to the pane, toasts and the status line.
+// - One thing crosses into the session, and only on the person's press: the
+//   path of a received file, written into their prompt box as a draft
+//   (prompt.fill). They send it; the message text never goes.
+// - One thing crosses out, and only on the person's press: Claude's last
+//   reply, or a file this session touched, offered for sending.
+// - A message goes out only on the person's Enter or press.
+// - Message text lives in this mod's memory alone, never in $.state (any
+//   plugin reads that) or $.store (it outlives the session). The store holds
+//   one thing: which session toasts.
+// - Each service reaches only the commands and hosts its spec declares
+//   (core/fence.ts). The mod itself starts one more program, `open`, and only
+//   when the person presses a file. It also starts `sips` to make the small
+//   copy of a picture that the pane shows; those copies are at most twelve temporary
+//   files, each overwritten in turn.
 
 const PANE = 'channel'
-const MAX_BACKOFF_MS = 300_000
-const KEEP = 200
-
-type View = {
-  spec: ProviderSpec
-  settings: Settings
-  chat?: Provider
-  conversations: Conversation[]
-  selected?: string
-  // Messages of the conversations opened so far.
-  messages: Map<string, Incoming[]>
-  unread: Map<string, number>
-  cursor?: string
-  problem: string | null
-  sent: number
-  timer?: Timer
-  isPolling: boolean
-  backoffMs: number
-}
-
-// Text from other people reaches the screen with its control characters out,
-// so a message cannot move the cursor or restyle the terminal.
-function clean(one: Incoming): Incoming {
-  const strip = (text: string) => text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '')
-
-  return { ...one, sender: strip(one.sender), text: strip(one.text) }
-}
-
-function reasonOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-function clockTime(at: number): string {
-  const time = new Date(at)
-
-  return `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`
-}
-
-function nameOf(view: View, conversation: string): string {
-  return view.conversations.find(one => one.id === conversation)?.name ?? conversation
-}
+const OPEN = '/usr/bin/open'
+const SIPS = '/usr/bin/sips'
+// The longest side of a picture's copy, in pixels: sharp where the terminal
+// draws pixels and reads the file itself, small where it is packed into cells.
+const SHARP = 1600
+const BLOCKS = 200
+const OFFERED_FILES = 5
+// What Claude's reply is cut to as a chat draft.
+const DRAFT = 2000
 
 // TERM_PROGRAM to the name the terminal goes by in System Settings.
 const APPS: Record<string, string> = {
@@ -64,252 +48,150 @@ const APPS: Record<string, string> = {
   vscode: 'Visual Studio Code',
 }
 
-// The provider gets a fenced `run`: its own commands and nothing else.
-async function connect($: EngineInterface, view: View): Promise<Provider> {
-  if (!view.chat) {
-    view.settings.home ||= (await $.env.get('HOME')) ?? ''
-    view.settings.app ||= APPS[(await $.env.get('TERM_PROGRAM')) ?? ''] ?? ''
-    view.chat = view.spec.connect({ run: guardRun(argv => $.process.run(argv), view.spec.commands) }, view.settings)
+// Real pixels where the terminal speaks the kitty graphics protocol. Not
+// through tmux, which drops it, nor over ssh.
+async function hasPixels($: EngineInterface): Promise<boolean> {
+  const isRelayed =
+    (await $.env.get('TMUX')) !== undefined ||
+    (await $.env.get('SSH_CONNECTION')) !== undefined ||
+    (await $.env.get('SSH_TTY')) !== undefined
+  if (isRelayed) {
+    return false
   }
+  const term = (await $.env.get('TERM')) ?? ''
+  const program = ((await $.env.get('TERM_PROGRAM')) ?? '').toLowerCase()
 
-  return view.chat
+  return (await $.env.get('KITTY_WINDOW_ID')) !== undefined || term.includes('kitty') || term.includes('ghostty') || program === 'ghostty'
 }
 
-async function isPaneShown($: EngineInterface): Promise<boolean> {
-  return (await $.ui.panes()).some(pane => pane.id === PANE && pane.isShown)
-}
+async function build($: EngineInterface, surface: string, options: Readonly<Record<string, unknown>>): Promise<Hub> {
+  const tmp = ((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/$/, '')
+  const isPixels = await hasPixels($)
+  let generation = 0
+  // One at a time: sips is not cheap, and a slot's file must not be half-written.
+  let making: Promise<unknown> = Promise.resolve()
 
-function showStatus($: EngineInterface, view: View): void {
-  const count = [...view.unread.values()].reduce((sum, n) => sum + n, 0)
-  $.ui.status(count > 0 ? `${view.spec.label} ${count} new` : undefined)
-}
-
-function redraw($: EngineInterface, view: View): void {
-  showStatus($, view)
-  $.ui.invalidate('ui.render')
-}
-
-async function openConversation($: EngineInterface, view: View, conversation: string): Promise<void> {
-  view.selected = conversation
-  view.unread.delete(conversation)
-  redraw($, view)
-  try {
-    const chat = await connect($, view)
-    view.messages.set(conversation, (await chat.recent(conversation)).map(clean))
-  } catch (error) {
-    view.problem = `${view.spec.label}: ${reasonOf(error)}`
-  }
-  redraw($, view)
-}
-
-function closeConversation($: EngineInterface, view: View): void {
-  view.selected = undefined
-  redraw($, view)
-}
-
-async function poll($: EngineInterface, view: View): Promise<number> {
-  const chat = await connect($, view)
-  if (view.conversations.length === 0) {
-    view.conversations = await chat.conversations()
-    const [only] = view.conversations
-    if (only && view.conversations.length === 1) {
-      await openConversation($, view, only.id)
+  async function thumbnail(path: string, slot: number): Promise<Picture | undefined> {
+    const measured = await $.process.run([SIPS, '-g', 'pixelWidth', '-g', 'pixelHeight', path])
+    const width = Number(/pixelWidth: (\d+)/.exec(measured.stdout)?.[1])
+    const height = Number(/pixelHeight: (\d+)/.exec(measured.stdout)?.[1])
+    if (measured.exitCode !== 0 || !(width > 0) || !(height > 0)) {
+      return undefined
     }
+    const file = `${tmp}/claude-channel-picture-${slot}.${isPixels ? 'png' : 'bmp'}`
+    const made = await $.process.run([SIPS, '-s', 'format', isPixels ? 'png' : 'bmp', '-Z', String(isPixels ? SHARP : BLOCKS), path, '--out', file])
+    if (made.exitCode !== 0) {
+      return undefined
+    }
+    if (isPixels) {
+      generation += 1
+
+      return { width, height, source: { file, generation } }
+    }
+    const bitmap = decodeBmp(Uint8Array.fromBase64((await $.fs.read(file, { as: 'bytes' })).base64))
+
+    return bitmap && { width, height, source: { bitmap } }
   }
 
-  const { messages, cursor } = await chat.since(view.cursor)
-  view.cursor = cursor
-  view.problem = null
-  const isShown = await isPaneShown($)
-  for (const one of messages.map(clean)) {
-    const list = view.messages.get(one.conversation)
-    if (list && !list.some(known => known.id === one.id)) {
-      view.messages.set(one.conversation, [...list, one].slice(-KEEP))
-    }
-    if (one.isFromMe || (isShown && view.selected === one.conversation)) {
-      continue
-    }
-    view.unread.set(one.conversation, (view.unread.get(one.conversation) ?? 0) + 1)
-    if (one.isAlert) {
-      const name = nameOf(view, one.conversation)
-      $.ui.toast(`${name === one.sender ? name : `${name} · ${one.sender}`}: ${one.text.slice(0, 80)}`)
-    }
-  }
-  if (messages.length > 0) {
-    // A new message moves its conversation to the top, or brings a new one.
-    view.conversations = await chat.conversations()
-  }
-  redraw($, view)
+  return createHub(services, {
+    hasPixels: isPixels,
+    thumbnail(path, slot) {
+      const next = making.then(() => thumbnail(path, slot))
+      making = next.catch(() => undefined)
 
-  return isShown ? view.spec.openMs : view.spec.closedMs
+      return next
+    },
+    tools: {
+      run: argv => $.process.run(argv),
+      fetch: (url, init) => $.http.fetch(url, init),
+      spawn: argv => $.process.spawn({ argv: [...argv] }),
+    },
+    settings: {
+      home: (await $.env.get('HOME')) ?? '',
+      app: APPS[(await $.env.get('TERM_PROGRAM')) ?? ''] ?? '',
+      surface,
+      options,
+    },
+    clock: { now: () => $.clock.now(), after: (ms, fn) => $.clock.after(ms, fn) },
+    isShown: async () => (await $.ui.panes()).some(pane => pane.id === PANE && pane.isShown),
+    toast: text => void $.ui.toast(text),
+    status: text => void $.ui.status(text),
+    store: {
+      get: key => $.store.get(key),
+      set: (key, value) => $.store.set(key, value),
+      delete: key => $.store.delete(key),
+    },
+    session: await $.session.id(),
+    redraw: () => void $.ui.invalidate('ui.render'),
+    toPrompt: async text => (await $.prompt.fill({ text, mode: 'insert' })).isFilled,
+    copy: async text => (await $.ui.copy({ text })).isCopied,
+    async offers() {
+      const messages = await $.session.messages()
+      const files: string[] = []
+      for (const message of [...messages].reverse()) {
+        for (const use of [...message.toolUses].reverse()) {
+          const path = use.input.file_path
+          if (typeof path === 'string' && path.startsWith('/') && !files.includes(path)) {
+            files.push(path)
+          }
+        }
+      }
+      const lastReply = messages.findLast(one => one.role === 'assistant' && one.text.trim())?.text.trim() ?? ''
+
+      return { files: files.slice(0, OFFERED_FILES), lastReply: lastReply.slice(0, DRAFT) }
+    },
+    async openPath(path) {
+      const res = await $.process.run([OPEN, path])
+      if (res.exitCode !== 0) {
+        throw new Error(res.stderr.trim() || `open exited ${res.exitCode}`)
+      }
+    },
+  })
 }
 
-// One poll at a time, each scheduling the next: fast while the pane shows,
-// slow behind it, backing off on errors.
-async function pollNow($: EngineInterface, view: View): Promise<void> {
-  if (view.isPolling) {
-    return
-  }
-  view.isPolling = true
-  view.timer?.cancel()
-  let nextMs: number
-  try {
-    nextMs = await poll($, view)
-    view.backoffMs = 0
-  } catch (error) {
-    view.backoffMs = Math.min(Math.max(view.backoffMs * 2, view.spec.closedMs), MAX_BACKOFF_MS)
-    nextMs = view.backoffMs
-    view.problem = `${view.spec.label}: ${reasonOf(error)}`
-    redraw($, view)
-  } finally {
-    view.isPolling = false
-  }
-  view.timer = $.clock.after(nextMs, () => void pollNow($, view))
-}
-
-async function send($: EngineInterface, view: View, text: string): Promise<void> {
-  const body = text.trim()
-  const conversation = view.selected
-  if (!body || !conversation) {
-    return
-  }
-  try {
-    await (await connect($, view)).send(conversation, body)
-    view.sent += 1
-    view.problem = null
-  } catch (error) {
-    view.problem = `Not sent: ${reasonOf(error)}`
-    redraw($, view)
-    return
-  }
-  redraw($, view)
-  await pollNow($, view)
-}
-
-export const register: Register = on => {
-  const spec: ProviderSpec = imessage
-  const settings: Settings = { home: '', app: '' }
-  const view: View = {
-    spec,
-    settings,
-    conversations: [],
-    messages: new Map(),
-    unread: new Map(),
-    problem: null,
-    sent: 0,
-    isPolling: false,
-    backoffMs: 0,
-  }
+export const register: Register = (on, options) => {
+  let hub: Hub | undefined
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'channel',
-      description: `Open your ${spec.label} conversations in a pane`,
+      description: 'Open your chats in a pane',
       immediate: true,
     })
+    hub = await build($, e.surface ?? 'none', options)
     if (e.isInteractive) {
-      void pollNow($, view)
+      void hub.start()
     }
 
     return next(e)
   })
 
   // /clear ends the conversation, not the process, and no session.start follows.
-  on('session.end', ($, e, next) => {
+  on('session.end', async ($, e, next) => {
     if (e.reason !== 'clear') {
-      view.timer?.cancel()
+      await hub?.stop()
     }
 
     return next(e)
   })
 
   on('command.run', { command: 'channel' }, async $ => {
-    await $.ui.open({ id: PANE, title: spec.label })
-    if (view.selected) {
-      view.unread.delete(view.selected)
-    }
-    redraw($, view)
-    void pollNow($, view)
+    await $.ui.open({ id: PANE, title: 'Chats', focus: true })
+    await hub?.attend()
 
     return { text: 'channel opened.' }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)
-    const { Box, Button, Text } = elements
-
-    const trouble = view.problem && <Text color="red">{view.problem}</Text>
-
-    if (!view.selected) {
-      return (
-        <Box flexDirection="column">
-          <Text bold>{view.spec.label}</Text>
-          {view.conversations.length === 0 && !view.problem && <Text dimColor>Loading conversations…</Text>}
-          {view.conversations.map((one, index) => {
-            const unread = view.unread.get(one.id) ?? 0
-            return (
-              <Button
-                key={`open-${one.id}`}
-                plain
-                label={`${one.name}${unread > 0 ? `  (${unread} new)` : ''}`}
-                hotkey={String(index + 1)}
-                onPress={() => void openConversation($, view, one.id)}
-              />
-            )
-          })}
-          {trouble}
-        </Box>
-      )
+    if (!hub) {
+      return <elements.Text dimColor>Starting…</elements.Text>
     }
 
-    const list = view.messages.get(view.selected) ?? []
-    const columns = Math.max(20, e.props.bodyColumns)
-    const Reply = 'Input' in elements ? elements.Input : undefined
-    let room = Math.max(1, e.props.scroll.bodyRows - (Reply ? 3 : 1) - (view.problem ? 1 : 0))
-    const tail: Incoming[] = []
-    for (const one of [...list].reverse()) {
-      if (room <= 0) {
-        break
-      }
-      room -= Math.max(1, Math.ceil((one.sender.length + one.text.length + 8) / columns))
-      tail.unshift(one)
-    }
-    const name = nameOf(view, view.selected)
-
-    return (
-      <Box flexDirection="column">
-        <Box>
-          {view.conversations.length > 1 && <Button key="back" label="‹ chats" onPress={() => closeConversation($, view)} />}
-          <Text bold> {name}</Text>
-        </Box>
-        {list.length === 0 && !view.problem && <Text dimColor>Loading…</Text>}
-        {tail.map(one => (
-          <Text key={one.id} wrap="wrap">
-            <Text dimColor>{clockTime(one.at)} </Text>
-            <Text bold color={one.isFromMe ? 'cyan' : undefined}>
-              {one.sender}
-            </Text>
-            <Text> {one.text}</Text>
-          </Text>
-        ))}
-        {trouble}
-        {Reply && (
-          <Reply
-            key="reply"
-            label="> "
-            placeholder={`Message ${name}`}
-            value=""
-            submitLabel="send"
-            autoFocus
-            onSubmit={text => void send($, view, text)}
-          />
-        )}
-        {Reply && (
-          <Text key={`sent-${view.sent}`} dimColor>
-            {view.sent > 0 ? 'Sent.' : ' '}
-          </Text>
-        )}
-      </Box>
-    )
+    return PaneView(hub, elements, {
+      bodyColumns: e.props.bodyColumns,
+      bodyRows: e.props.scroll.bodyRows,
+      surface: e.surface,
+    })
   })
 }
