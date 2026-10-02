@@ -10,7 +10,8 @@ export type Run = (argv: readonly string[]) => Promise<ProcessRunResult>
 // spec's own commands and nothing else.
 export type Tools = { run: Run }
 
-export type Settings = { home: string }
+// `app` is the name macOS lists the terminal under, or '' when unknown.
+export type Settings = { home: string; app: string }
 
 export type Conversation = { id: string; name: string }
 

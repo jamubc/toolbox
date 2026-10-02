@@ -41,7 +41,7 @@ function row(id: number, conversation: number, fields: Partial<Row>): Row {
 // A fake Messages database and Messages app beneath the plugin.
 function mac(on: On) {
   const clock = mock.clock(on, { now: 1_767_225_600_000 })
-  mock.env(on, { HOME: '/Users/someone' })
+  mock.env(on, { HOME: '/Users/someone', TERM_PROGRAM: 'ghostty' })
   const runs: (readonly string[])[] = []
   const toasts: string[] = []
   const statuses: (string | undefined)[] = []
@@ -192,7 +192,7 @@ test('without Full Disk Access the pane says how to grant it', async ($, on) => 
   await m.clock.settle()
 
   const ui = await $.ui.mount({ plugin: 'channel', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'channel' })
-  expect(await ui.find({ text: /Full Disk Access/ })).toBeDefined()
+  expect(await ui.find({ text: /turn on Ghostty in .*Full Disk Access/ })).toBeDefined()
 })
 
 test('a provider runs only its own commands', async () => {

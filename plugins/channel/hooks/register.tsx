@@ -54,10 +54,21 @@ function nameOf(view: View, conversation: string): string {
   return view.conversations.find(one => one.id === conversation)?.name ?? conversation
 }
 
+// TERM_PROGRAM to the name the terminal goes by in System Settings.
+const APPS: Record<string, string> = {
+  Apple_Terminal: 'Terminal',
+  'iTerm.app': 'iTerm',
+  ghostty: 'Ghostty',
+  WezTerm: 'WezTerm',
+  WarpTerminal: 'Warp',
+  vscode: 'Visual Studio Code',
+}
+
 // The provider gets a fenced `run`: its own commands and nothing else.
 async function connect($: EngineInterface, view: View): Promise<Provider> {
   if (!view.chat) {
     view.settings.home ||= (await $.env.get('HOME')) ?? ''
+    view.settings.app ||= APPS[(await $.env.get('TERM_PROGRAM')) ?? ''] ?? ''
     view.chat = view.spec.connect({ run: guardRun(argv => $.process.run(argv), view.spec.commands) }, view.settings)
   }
 
@@ -177,7 +188,7 @@ async function send($: EngineInterface, view: View, text: string): Promise<void>
 
 export const register: Register = on => {
   const spec: ProviderSpec = imessage
-  const settings: Settings = { home: '' }
+  const settings: Settings = { home: '', app: '' }
   const view: View = {
     spec,
     settings,

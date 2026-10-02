@@ -12,9 +12,12 @@ const APPLE_EPOCH_MS = 978_307_200_000
 const RECENT = 50
 const SINCE_LIMIT = 200
 const CONVERSATIONS = 9
-const NO_ACCESS =
-  'cannot read Messages: give the app running Claude Code Full Disk Access ' +
-  '(System Settings › Privacy & Security › Full Disk Access), then restart it'
+
+function noAccess(app: string): string {
+  const name = app || 'the terminal app you run Claude Code in'
+  return `cannot read Messages: turn on ${name} in System Settings › Privacy & Security › ` +
+    `Full Disk Access (add it with + if it is not listed), then quit and reopen ${app || 'it'}`
+}
 
 type Row = {
   id: number
@@ -112,14 +115,14 @@ export const imessage: ProviderSpec = {
   commands: [SQLITE, OSASCRIPT],
   openMs: 3_000,
   closedMs: 10_000,
-  connect({ run }, { home }) {
+  connect({ run }, { home, app }) {
     const database = `${home}/Library/Messages/chat.db`
     const guids = new Map<string, string>()
 
     async function query<T>(sql: string): Promise<T[]> {
       const res = await run([SQLITE, '-readonly', '-json', database, sql])
       if (res.exitCode !== 0) {
-        throw new Error(/unable to open|authorization denied|not authorized/i.test(res.stderr) ? NO_ACCESS : res.stderr.trim() || `sqlite3 exited ${res.exitCode}`)
+        throw new Error(/unable to open|authorization denied|not authorized/i.test(res.stderr) ? noAccess(app) : res.stderr.trim() || `sqlite3 exited ${res.exitCode}`)
       }
       if (res.isStdoutTruncated) {
         throw new Error('the Messages query answered more than 4 MiB')
