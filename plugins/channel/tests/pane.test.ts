@@ -323,7 +323,7 @@ test('older brings more history into the conversation, and latest returns to the
   await ui.unmount()
 })
 
-test('pictures off in settings shows the file row alone', { options: { pictures: 'off' } }, async ($, on) => {
+test('previews off in settings shows the file row alone', { options: { pictures: 'no previews, files only' } }, async ($, on) => {
   const m = mac(on)
   await start($)
   await m.clock.settle()
@@ -336,7 +336,7 @@ test('pictures off in settings shows the file row alone', { options: { pictures:
   await ui.unmount()
 })
 
-test('blocks in settings packs a picture into cells, encoded once per size', { options: { pictures: 'blocks' } }, async ($, on) => {
+test('colored blocks forced in settings packs a picture into cells, encoded once per size', { options: { pictures: 'always colored blocks (any terminal)' } }, async ($, on) => {
   const m = mac(on)
   await start($)
   await m.clock.settle()

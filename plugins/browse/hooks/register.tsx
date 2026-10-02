@@ -131,10 +131,14 @@ function blankCells(columns: number, rows: number): string {
  * Real pixels where the terminal speaks the kitty graphics protocol. Not
  * through tmux, which drops it, nor over ssh, where the terminal cannot read
  * the frame files; kitty's variables leak into both.
+ *
+ * The words are what the /config picker shows, so a row there explains itself;
+ * the engine has already turned anything else into the default before we run.
  */
 async function pickRenderer($: EngineInterface, options: Options): Promise<Renderer> {
-  if (options.renderer === 'image') return 'image'
-  if (options.renderer === 'blocks') return 'cells'
+  const choice = (options.renderer ?? '').toLowerCase()
+  if (choice.startsWith('always real')) return 'image'
+  if (choice.startsWith('always colored')) return 'cells'
   const isRelayed =
     (await $.env.get('TMUX')) !== undefined ||
     (await $.env.get('SSH_CONNECTION')) !== undefined ||

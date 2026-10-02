@@ -18,14 +18,14 @@
   "userConfig": {
     "binary": {
       "type": "string",
-      "title": "InstantNotes binary",
-      "description": "The instantnotes executable, a path or a name on PATH. Empty finds it: the instantnotes MCP server Claude Code runs, what `claude mcp add instantnotes` wrote, then the app bundle.",
+      "title": "InstantNotes program (blank: find it)",
+      "description": "The instantnotes executable, a name on PATH or a full path. Blank looks for the program the InstantNotes MCP server runs, then what `claude mcp add instantnotes` wrote, then the app bundle, so most people never set this.",
       "default": ""
     },
     "db": {
       "type": "string",
-      "title": "Library database",
-      "description": "Path to instantnotes.db. Empty uses the app's default location.",
+      "title": "Notes library (blank: the app's own)",
+      "description": "Path to instantnotes.db, to read a second library. Blank uses the one the app or `claude mcp add instantnotes` named, and attachments are read from the folder beside it.",
       "default": ""
     }
   }

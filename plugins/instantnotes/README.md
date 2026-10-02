@@ -51,7 +51,7 @@ When none of these can start, the pane says so and lists the steps.
 <br>
 
 - Needs InstantNotes 0.9.0 or later, with Access turned on in Settings › Agents.
-- `/config` → InstantNotes binary names the program when the plugin cannot find it. `/config` → Library database names a library other than the one the app or `claude mcp add` uses; the attachments folder is read beside it.
+- `/config` → InstantNotes program names the program when the plugin cannot find it. `/config` → Notes library names a library other than the one the app or `claude mcp add` uses; the attachments folder is read beside it.
 - With nothing set, the app's own library is used: `~/.local/share/com.instantnotes.app` on Linux, `~/Library/Application Support/com.instantnotes.app` on macOS.
 
 </details>

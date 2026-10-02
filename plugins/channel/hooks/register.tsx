@@ -77,10 +77,13 @@ async function hasPixels($: EngineInterface): Promise<boolean> {
 }
 
 // How pictures draw, from /config and the terminal: pixels, cells, or not at all.
+// The words are what the /config picker shows, so a row there explains itself;
+// the engine has already turned anything else into the default before we run.
 async function pictureMode($: EngineInterface, options: Options): Promise<'pixels' | 'cells' | 'off'> {
-  if (options.pictures === 'off') return 'off'
-  if (options.pictures === 'image') return 'pixels'
-  if (options.pictures === 'blocks') return 'cells'
+  const choice = (options.pictures ?? '').toLowerCase()
+  if (choice.startsWith('no previews')) return 'off'
+  if (choice.startsWith('always real')) return 'pixels'
+  if (choice.startsWith('always colored')) return 'cells'
 
   return (await hasPixels($)) ? 'pixels' : 'cells'
 }

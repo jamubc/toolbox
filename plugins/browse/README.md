@@ -28,7 +28,7 @@ Install the plugin:
 | The address bar | Type an address or words and press Enter. It has the keys when the start page opens. |
 | Click the page | Clicks there. Your keys then go to the page; **Esc** gives them back to the prompt. |
 | Mouse wheel over the page | Scrolls the page. |
-| `/config` → Picture | `auto`, `image` (real pixels) or `blocks` (colored cells). |
+| `/config` → How the page is drawn | `auto`, always real pixels (kitty or Ghostty only) or always colored blocks (any terminal). |
 
 ## Compatibility
 
@@ -44,9 +44,9 @@ Install the plugin:
 | Linux | Should work; untested. Chrome is looked up on your PATH. |
 | Windows | Not supported yet. The pane says so. |
 
-- **Needs** Chrome, Chromium, Brave or Edge, and Node.js 18 or later on your PATH. If one is missing, the pane says which and offers **Try again**. You can set either path in `/config`.
+- **Needs** Chrome, Chromium, Brave or Edge, and Node.js 18 or later on your PATH. If one is missing, the pane says which and offers **Try again**. You can set either in `/config` → Browser to draw in and Node.js 18+ to run it.
 - Inside tmux or over ssh the picture is always blocks, even from kitty or Ghostty, because neither passes the images through.
-- If you force `image` on a terminal that cannot draw it, the pane says so; set Picture back to `auto` or `blocks`.
+- If you force real pixels on a terminal that cannot draw them, the pane says so; set `/config` → How the page is drawn back to `auto` or colored blocks.
 - One browser at a time: if another Claude Code session has the pane open, `/browse` says so.
 - While a video plays, expect roughly a fifth of a CPU core each for Claude Code drawing the pane and for Chrome (measured on an M-series Mac).
 

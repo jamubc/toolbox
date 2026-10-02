@@ -54,7 +54,7 @@ micro runs for real inside the pane: your own micro settings, colors and plugins
 - Claude Code keeps **Ctrl+C**, **Ctrl+Z** and **Ctrl+O** for itself, and **Esc** returns the keys, so the header has **Esc**, **Copy** and **Undo** buttons that send them to micro. Don't press Ctrl+Z: it suspends Claude Code.
 - Pasting with your terminal goes to the Claude prompt. Use micro's **Ctrl+V**, which reads the clipboard.
 - The pane won't close while micro is open: quit with Ctrl+Q so micro can ask about unsaved changes.
-- `/config` → Editor runs another terminal editor instead: `nano` and `vim` work too.
+- `/config` → Editor for files runs another terminal editor instead: `nano` and `vim` work too.
 
 ## Compatibility
 

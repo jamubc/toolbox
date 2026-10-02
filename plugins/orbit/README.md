@@ -16,7 +16,7 @@ Install the plugin:
 /plugin install orbit@toolbox
 ```
 
-Then, once: `/orbit locate` (or `/config` → Your location) for the red dot, and `/orbit geodb` for the offline geo database that places connections.
+Then, once: `/orbit locate` (or `/config` → Where you are) for the red dot, and `/orbit geodb` for the offline geo database that places connections.
 
 ## Usage
 
@@ -30,14 +30,14 @@ Then, once: `/orbit locate` (or `/config` → Your location) for the red dot, an
 | `/orbit allow <host>` | Allows one, which also whitelists it in allowlist mode. |
 | `/orbit unblock <host>` | Removes the rule. Rules are kept across sessions. |
 | `/orbit rules` | Lists the rules and the mode. |
-| `/orbit mode off\|denylist\|allowlist\|ask` | Watch only; block what is listed; block all but the allowed; or ask about each new host with a dialog (8 seconds, then deny). `/config` → Enforcement sets the default. |
+| `/orbit mode off\|denylist\|allowlist\|ask` | Watch only; block what is listed; block all but the allowed; or ask about each new host with a dialog (8 seconds, then deny). `/config` → What to do with a host you have not allowed sets the default. |
 | `/orbit export [path]` | Writes the trace as JSONL. The trace is also written as it goes to `~/.claude/orbit/traces/<session>.jsonl`. |
 | `/orbit replay [file\|off]` | Lists the saved traces, or re-animates one on the globe with a scrubber: ⏮ ▶ ⏸ ⏭ and 1× to 16×. |
 | `/orbit locate` | Sets your location from your public address: one request, then an offline lookup. Or `/orbit home 49.28,-123.12 Vancouver`. |
 | `/orbit geodb [country]` | Downloads DB-IP Lite (city, ~130 MB, or country, ~10 MB) and ASN Lite into `~/.claude/orbit/geo`. No account, no key. |
-| `/orbit proxy on\|off` | Starts the proxy layer for this session. `/config` → Proxy layer starts it every session. |
+| `/orbit proxy on\|off` | Starts the proxy layer for this session. `/config` → Start the proxy layer every session turns it on for every session. |
 | `/orbit check` | Which layers work here, and why not. |
-| `/config` → Status line | Shows `orbit · 6 hosts · 3 countries` on the status line. |
+| `/config` → Show hosts and countries at the bottom of the terminal | Shows `orbit · 6 hosts · 3 countries` on the status line. |
 
 ## What it sees
 
@@ -51,9 +51,9 @@ Beside those, the turn's own stream is tapped so the Anthropic arc pulses while 
 
 ### Places
 
-Addresses are placed with an offline MaxMind-format database: DB-IP Lite by default (`/orbit geodb`, CC BY 4.0), or a GeoLite2 file you point `/config` → Geo database at. Lookups run on your machine; orbit makes **no request per connection**, ever. Cloudflare, Fastly, Akamai, public DNS and Anthropic's own ranges are marked `~` anycast, because where an anycast address answers is not where its owner is; Anthropic's API is drawn at the company's home and says so.
+Addresses are placed with an offline MaxMind-format database: DB-IP Lite by default (`/orbit geodb`, CC BY 4.0), or a GeoLite2 file you point `/config` → City database at. Lookups run on your machine; orbit makes **no request per connection**, ever. Cloudflare, Fastly, Akamai, public DNS and Anthropic's own ranges are marked `~` anycast, because where an anycast address answers is not where its owner is; Anthropic's API is drawn at the company's home and says so.
 
-Your own location is manual first (`/config` → Your location). `/orbit locate` is the one exception to "no requests": one call to api.ipify.org for your address, which the offline database then places (without a database it asks ipinfo.io once instead, and says so).
+Your own location is manual first (`/config` → Where you are). `/orbit locate` is the one exception to "no requests": one call to api.ipify.org for your address, which the offline database then places (without a database it asks ipinfo.io once instead, and says so).
 
 ## Compatibility
 
@@ -117,6 +117,6 @@ Your own location is manual first (`/config` → Your location). `/orbit locate`
 - It reads process and socket tables with `ps`, `lsof`, `ss`, `nettop` or `/proc`, for your own processes.
 - No request per connection. The only requests it ever makes are the ones you ask for: `/orbit geodb` (db-ip.com) and `/orbit locate` (api.ipify.org, or ipinfo.io without a database).
 - The proxy sees hostnames, addresses and byte counts; it does not decrypt TLS and keeps no request bodies.
-- The trace is written to `~/.claude/orbit/traces` (off with `/config` → Write the trace) and rules to the plugin's store. Nothing leaves your machine.
+- The trace is written to `~/.claude/orbit/traces` (off with `/config` → Write the trace to disk every session) and rules to the plugin's store. Nothing leaves your machine.
 
 </details>

@@ -19,14 +19,14 @@
   "userConfig": {
     "editor": {
       "type": "string",
-      "title": "Editor",
-      "description": "The terminal editor that opens files, a path or a name on PATH: micro, nano, vim, hx...",
+      "title": "Editor for files, e.g. micro, nano, vim, hx",
+      "description": "Any terminal editor: a name on PATH or a full path such as /opt/homebrew/bin/hx. micro is the default and the friendliest.",
       "default": "micro"
     },
     "python": {
       "type": "string",
-      "title": "Python",
-      "description": "The python3 (3.9 or later) that hosts the editor, a path or a name on PATH.",
+      "title": "Python 3.9+ to run it, e.g. python3",
+      "description": "The python3 that hosts the editor, a name on PATH or a full path such as /opt/homebrew/bin/python3. Only change this if python3 is missing or older than 3.9.",
       "default": "python3"
     }
   }

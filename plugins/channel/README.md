@@ -31,7 +31,7 @@ In the pane:
 - **Tabs** switch between services. With two or more set up, an `All` tab shows every conversation together.
 - **The list** shows each conversation with a colored avatar chip, when it last moved, how many people are in it, and its newest message. Unread chats are marked and counted; keys `1` to `9` open the first nine.
 - **A conversation** shows messages under the day they came, each person in their own color (you in cyan), with files, the message a reply answers, reactions, and edited or unsent messages. **↑ older** pages back through the history; **↓ latest** returns to the end.
-- **Pictures** (and the first page of a PDF) preview inline in the terminal: as real pixels in kitty and Ghostty, as colored blocks elsewhere. A terminal that turns out not to draw pixels falls back to blocks by itself. `/config` → Pictures forces one, or turns previews off.
+- **Pictures** (and the first page of a PDF) preview inline in the terminal: as real pixels in kitty and Ghostty, as colored blocks elsewhere. A terminal that turns out not to draw pixels falls back to blocks by itself. `/config` → How picture previews are drawn forces one, or turns previews off.
 - **→ Claude** on a file puts its path in your Claude prompt, ready for you to send. **copy path** copies it, and pressing the file name opens it with your Mac's own app.
 - **attach** sends a file: pick one this Claude session touched, type a path, or drag a file onto the field.
 - **Claude's reply** puts Claude's last answer in the reply box for you to edit and send.

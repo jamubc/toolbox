@@ -37,8 +37,8 @@ As of 2026-10-02, version 0.4.0. Design:
 - Older-history paging in the pane (`↑ older`, `↓ latest`).
 - Pictures of any type macOS reads (JPEG, HEIC, PNG) and a PDF's first page
   preview inline: pixels in kitty and Ghostty, colored blocks elsewhere.
-  Cells are box-filtered and cached per size. A `Pictures` setting (auto,
-  image, blocks, off), and a fall back to blocks after three refused draws,
+  Cells are box-filtered and cached per size. A picture-previews setting (auto,
+  real pixels, colored blocks, none), and a fall back to blocks after three refused draws,
   as the browse pane does with frames.
 - Files carry a glyph by kind (picture, video, audio, PDF, archive, text).
 - The file name is the open button; unread chats marked; a run of messages

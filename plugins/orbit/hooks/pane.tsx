@@ -156,7 +156,7 @@ export function drawPane(ui: Table, m: PaneModel, a: Actions) {
 
   const homeLine =
     m.home.source === 'none' ? (
-      <Text color="#ffa726" wrap="wrap">No home yet: set it in /config → Your location, or /orbit locate (one public-IP lookup).</Text>
+      <Text color="#ffa726" wrap="wrap">No home yet: set it in /config → Where you are, or /orbit locate (one public-IP lookup).</Text>
     ) : (
       <Text dimColor wrap="truncate">{`you: ${m.home.label || `${m.home.lat.toFixed(2)}, ${m.home.lon.toFixed(2)}`}${m.home.source === 'lookup' ? ' (from your public IP)' : ''}`}</Text>
     )

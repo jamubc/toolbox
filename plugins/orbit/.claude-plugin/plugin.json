@@ -10,64 +10,68 @@
   "userConfig": {
     "location": {
       "type": "string",
-      "title": "Your location",
-      "description": "Latitude and longitude of the red dot, e.g. \"49.28,-123.12 Vancouver\". Empty: use /orbit locate once, or the globe centers on 0,0.",
+      "title": "Where you are (for the red dot)",
+      "description": "Latitude and longitude of the red dot on the globe, e.g. \"49.28,-123.12 Vancouver\". Blank: run /orbit locate once, or the globe centers on 0,0.",
       "default": ""
     },
     "enforcement": {
       "type": "string",
-      "title": "Enforcement",
-      "description": "off: watch only. denylist: block hosts and servers you listed with /orbit block. allowlist: block everything not allowed with /orbit allow. ask: ask about each new host (8 seconds, then deny).",
+      "title": "What to do with a host you have not allowed",
+      "description": "The mode every session starts in, the same four as /orbit mode. off watches and blocks nothing. denylist blocks only what you listed with /orbit block. allowlist blocks everything not on your list. ask asks about each new host with a dialog, 8 seconds, then blocks. /orbit mode changes it for the session you are in, and /orbit rules shows it.",
       "options": ["off", "denylist", "allowlist", "ask"],
       "default": "denylist"
     },
     "picture": {
       "type": "string",
-      "title": "Globe picture",
-      "description": "auto: real pixels where the terminal draws them (kitty, Ghostty), colored half-blocks elsewhere. image or blocks force one.",
-      "options": ["auto", "image", "blocks"],
-      "default": "auto"
+      "title": "How the globe is drawn",
+      "description": "auto draws real pixels where the terminal can (kitty, Ghostty) and colored half-blocks everywhere else, so most people never touch this. Forcing real pixels in a terminal that cannot draw them leaves the pane saying so.",
+      "options": [
+        "auto (real in kitty and Ghostty)",
+        "always real pixels (kitty or Ghostty only)",
+        "always colored blocks (any terminal)"
+      ],
+      "default": "auto (real in kitty and Ghostty)"
     },
     "geoDatabase": {
       "type": "string",
-      "title": "Geo database",
-      "description": "Path of a MaxMind-format city or country database (DB-IP Lite, GeoLite2). Empty: the DB-IP Lite files /orbit geodb downloads into ~/.claude/orbit/geo.",
+      "title": "City database (blank: the one /orbit geodb gets)",
+      "description": "Path of a MaxMind-format city or country database (DB-IP Lite, GeoLite2). Blank uses the DB-IP Lite files /orbit geodb downloads into ~/.claude/orbit/geo.",
       "default": ""
     },
     "asnDatabase": {
       "type": "string",
-      "title": "ASN database",
-      "description": "Path of a MaxMind-format ASN database for the org column. Empty: the DB-IP ASN Lite file /orbit geodb downloads.",
+      "title": "Organization database (blank: the one /orbit geodb gets)",
+      "description": "Path of a MaxMind-format ASN database, which fills the org column. Blank uses the DB-IP ASN Lite file /orbit geodb downloads.",
       "default": ""
     },
     "proxy": {
       "type": "boolean",
-      "title": "Proxy layer",
-      "description": "Run a local HTTPS proxy for commands and MCP servers this session starts, so their hosts, bytes and latency are seen without decrypting anything. Sets HTTPS_PROXY for them.",
+      "title": "Start the proxy layer every session",
+      "description": "true runs a local HTTPS proxy for the commands and MCP servers this session starts, so their hosts, bytes and latency reach the globe without decrypting anything; it sets HTTPS_PROXY for them. /orbit proxy on does this for one session.",
       "default": false
     },
     "fadeSeconds": {
       "type": "number",
-      "title": "Arc fade",
-      "description": "How many seconds a finished connection's arc stays on the globe.",
+      "title": "Seconds an arc stays on the globe",
+      "description": "How long a finished connection's arc lingers before it fades. Higher is calmer, lower is busier.",
       "default": 25
     },
     "autoLog": {
       "type": "boolean",
-      "title": "Write the trace",
-      "description": "Keep the session's trace as JSONL in ~/.claude/orbit/traces, for /orbit replay.",
+      "title": "Write the trace to disk every session",
+      "description": "true keeps this session's calls as JSONL in ~/.claude/orbit/traces, which is what /orbit replay reads. false writes nothing.",
       "default": true
     },
     "statusLine": {
       "type": "boolean",
-      "title": "Status line",
-      "description": "Show a count of hosts and countries on the status line.",
+      "title": "Show hosts and countries at the bottom of the terminal",
+      "description": "The status line is the thin bar along the bottom of your terminal. true puts a count there, e.g. \"orbit · 6 hosts · 3 countries\". false leaves the bottom alone.",
       "default": false
     },
     "node": {
       "type": "string",
-      "title": "Node path",
-      "description": "The node executable for the geo and proxy helpers; empty looks on PATH.",
+      "title": "Node.js to run the helpers (blank: node)",
+      "description": "The node executable for the geo and proxy helpers, a name on PATH or a full path. Blank uses node from your PATH. The globe still draws without it; the city names and the proxy layer need it.",
       "default": ""
     }
   }

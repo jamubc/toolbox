@@ -17,21 +17,21 @@
   "userConfig": {
     "imessage": {
       "type": "boolean",
-      "title": "iMessage",
-      "description": "Show your iMessage conversations (macOS 13 or later, terminal only)",
+      "title": "Read and send your iMessage",
+      "description": "true lists your conversations in the pane and can send from it. Needs macOS 13 or later and the terminal, because it reads the local Messages database. false removes the tab and reads nothing.",
       "default": true
     },
     "pictures": {
       "type": "string",
-      "title": "Pictures",
-      "description": "auto: real pixels in kitty and Ghostty, colored blocks elsewhere. image or blocks forces one; off shows files only.",
+      "title": "How picture previews are drawn",
+      "description": "auto shows real pixels in kitty and Ghostty and colored blocks elsewhere; a terminal that turns out not to draw pixels falls back to blocks by itself.",
       "options": [
-        "auto",
-        "image",
-        "blocks",
-        "off"
+        "auto (real in kitty and Ghostty)",
+        "always real pixels (kitty or Ghostty only)",
+        "always colored blocks (any terminal)",
+        "no previews, files only"
       ],
-      "default": "auto"
+      "default": "auto (real in kitty and Ghostty)"
     }
   }
 }

@@ -431,9 +431,12 @@ async function frame($: EngineInterface): Promise<void> {
 
 const summaryOf = (r: Replay): OrbitReplay => ({ file: r.file, count: r.events.length, start: r.start, end: r.end, position: r.position, speed: r.speed, isPlaying: r.isPlaying })
 
+// The words are what the /config picker shows, so a row there explains itself;
+// the engine has already turned anything else into the default before we run.
 async function pickRenderer($: EngineInterface): Promise<'image' | 'cells'> {
-  if (options.picture === 'image') return 'image'
-  if (options.picture === 'blocks') return 'cells'
+  const choice = (options.picture ?? '').toLowerCase()
+  if (choice.startsWith('always real')) return 'image'
+  if (choice.startsWith('always colored')) return 'cells'
   const isRelayed = (await $.env.get('TMUX')) !== undefined || (await $.env.get('SSH_CONNECTION')) !== undefined || (await $.env.get('SSH_TTY')) !== undefined
   if (isRelayed) return 'cells'
   const term = (await $.env.get('TERM')) ?? ''
@@ -612,14 +615,14 @@ async function locate($: EngineInterface): Promise<string> {
       const out = await run($, [nodeBin, `${$.plugin.root}/geo/geoip.mjs`, 'lookup', geoFiles.geo, geoFiles.asn || '-', formatIp(ip)], 20000)
       const answer = JSON.parse(out.split('\n').find(l => l.trim()) ?? '{}') as GeoAnswer
       const place = placeOf(answer, ip)
-      if (!place.lat && !place.lon) return `Your address ${formatIp(ip)} is not in the database; set /config → Your location by hand.`
+      if (!place.lat && !place.lon) return `Your address ${formatIp(ip)} is not in the database; set /config → Where you are by hand.`
       await setHome($, { lat: place.lat, lon: place.lon, label: [place.city, place.country].filter(Boolean).join(', '), source: 'lookup' })
       return `Home set to ${currentHome.label} (${place.lat}, ${place.lon}) from your public address, looked up offline. Saved for next time.`
     }
     const res = await $.http.fetch('https://ipinfo.io/json')
     const info = JSON.parse(res.text) as { loc?: string; city?: string; country?: string }
     const parsed = parseLocation(info.loc ?? '')
-    if (!parsed) return 'ipinfo.io gave no location; set /config → Your location by hand.'
+    if (!parsed) return 'ipinfo.io gave no location; set /config → Where you are by hand.'
     await setHome($, { ...parsed, label: [info.city, info.country].filter(Boolean).join(', '), source: 'lookup' })
     return `Home set to ${currentHome.label} (${parsed.lat}, ${parsed.lon}) by one lookup at ipinfo.io (no database yet). Saved for next time.`
   } catch (err) {
@@ -683,7 +686,7 @@ async function addRule($: EngineInterface, subjectText: string, action: 'allow' 
   if (!parsed) return 'Name a host (example.com, *.example.com, 1.2.3.4), mcp:<server> or tool:<Tool>.'
   const rule: Rule = { kind: parsed.kind, pattern: parsed.pattern, action, at: now() }
   await saveRules($, withRule(currentRules, rule))
-  const hint = currentMode === 'off' ? ' Enforcement is off: set /config → Enforcement or /orbit mode denylist to apply it.' : ''
+  const hint = currentMode === 'off' ? ' Enforcement is off: set /config → What to do with a host you have not allowed or /orbit mode denylist to apply it.' : ''
   return `${action === 'deny' ? 'Blocking' : 'Allowing'} ${rule.kind}:${rule.pattern}.${hint}`
 }
 
@@ -729,9 +732,9 @@ async function checkReport($: EngineInterface): Promise<string> {
     `Platform: ${c.platform}${c.self ? ` · this session is pid ${c.self}` : ' · could not find this session in ps'}`,
     `1. Tool layer: on (tool.call hook) · enforcement ${currentMode} · ${currentRules.length} rule${currentRules.length === 1 ? '' : 's'}`,
     `2. Process layer: ${c.sockets ? `on, sockets via ${c.sockets}` : 'off: no lsof/ss/proc source found'}${c.bytes ? ` · bytes via ${c.bytes}` : ' · no byte counts'}`,
-    `3. Proxy layer: ${c.proxy === 'on' ? `on at 127.0.0.1:${c.proxyPort}` : c.proxy === 'error' ? 'failed to start' : 'off (/config → Proxy layer, or /orbit proxy on)'}`,
+    `3. Proxy layer: ${c.proxy === 'on' ? `on at 127.0.0.1:${c.proxyPort}` : c.proxy === 'error' ? 'failed to start' : 'off (/config → Start the proxy layer every session, or /orbit proxy on)'}`,
     `Geo: ${c.geo === 'ready' ? `ready (${geoFiles.geo}${geoFiles.asn ? ' + ASN' : ', no ASN db'})` : c.geo === 'no-node' ? 'needs Node.js' : c.geo === 'downloading' ? `downloading ${c.geoNote}` : 'no database: /orbit geodb'}`,
-    `Home: ${currentHome.source === 'none' ? 'unset (/config → Your location, or /orbit locate)' : `${currentHome.label || ''} ${currentHome.lat}, ${currentHome.lon} (${currentHome.source})`}`,
+    `Home: ${currentHome.source === 'none' ? 'unset (/config → Where you are, or /orbit locate)' : `${currentHome.label || ''} ${currentHome.lat}, ${currentHome.lon} (${currentHome.source})`}`,
     `Picture: ${currentRenderer === 'image' ? 'real pixels' : 'colored blocks'}`,
   ]
   return lines.join('\n')
@@ -881,7 +884,7 @@ export const register: Register = (on, opts) => {
         if (!MODES.includes(arg as Mode)) return { text: `Modes: ${MODES.join(', ')}. Currently ${currentMode}.` }
         currentMode = arg as Mode
         await write($, 'mode', () => currentMode)
-        return { text: `Enforcement: ${currentMode}${currentMode === 'ask' ? ' (a dialog asks about each new host; 8 seconds, then deny)' : ''}. /config → Enforcement sets the default.` }
+        return { text: `Enforcement: ${currentMode}${currentMode === 'ask' ? ' (a dialog asks about each new host; 8 seconds, then deny)' : ''}. /config → What to do with a host you have not allowed sets the default.` }
       }
       case 'export':
         return { text: await exportTrace($, arg) }
@@ -898,7 +901,7 @@ export const register: Register = (on, opts) => {
         const parsed = parseLocation(arg)
         if (!parsed) return { text: 'Give a latitude and longitude: /orbit home 49.28,-123.12 Vancouver' }
         await setHome($, { ...parsed, source: 'lookup' })
-        return { text: `Home set to ${parsed.lat}, ${parsed.lon}${parsed.label ? ` (${parsed.label})` : ''}. Saved for next time; /config → Your location overrides it.` }
+        return { text: `Home set to ${parsed.lat}, ${parsed.lon}${parsed.label ? ` (${parsed.label})` : ''}. Saved for next time; /config → Where you are overrides it.` }
       }
       case 'geodb':
         return { text: await downloadGeo($, arg === 'country' ? 'country' : 'city') }
