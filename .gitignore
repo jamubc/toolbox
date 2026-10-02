@@ -2,6 +2,9 @@
 .claude-plugin/types/
 .DS_Store
 
+# Isolated worktrees for feature work
+.worktrees/
+
 # Release notes for the maintainer
 HOW TO SUBMIT.md
 
