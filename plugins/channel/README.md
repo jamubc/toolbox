@@ -1,17 +1,17 @@
-# backchannel
+# channel
 
 Your iMessages in a pane beside Claude Code. Read your conversations, reply from a text box, and get a toast when someone texts you, without leaving the terminal. macOS only.
 
 ```
 /plugin marketplace add jamubc/toolbox
-/plugin install backchannel@toolbox
+/plugin install channel@toolbox
 ```
 
 ## Use
 
 | | |
 |---|---|
-| `/backchannel` | Opens a pane with your nine most recent conversations. Press `1` to `9` to open one. |
+| `/channel` | Opens a pane with your nine most recent conversations. Press `1` to `9` to open one. |
 | In a conversation | Its latest messages with time and sender, and a reply box: type and press Enter to send. `‹ chats` goes back. |
 | New messages | A toast for each message you aren't looking at, e.g. *Book club · +1 555 0103: chapter 4 tonight?*, and *iMessage 3 new* under the prompt. Your own messages never toast. |
 
@@ -37,8 +37,8 @@ Every 3 seconds with the pane open (10 when closed) it reads new rows from the M
 ## Development
 
 ```sh
-claude --plugin-dir plugins/backchannel     # load it; edits hot-reload
-claude plugin validate plugins/backchannel
-claude plugin test plugins/backchannel
-tsc -p plugins/backchannel                  # after one load writes .claude-plugin/types/
+claude --plugin-dir plugins/channel     # load it; edits hot-reload
+claude plugin validate plugins/channel
+claude plugin test plugins/channel
+tsc -p plugins/channel                  # after one load writes .claude-plugin/types/
 ```

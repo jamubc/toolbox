@@ -114,7 +114,7 @@ async function start($: Engine) {
 }
 
 async function openPane($: Engine) {
-  await $.command.run({ command: 'backchannel', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } })
+  await $.command.run({ command: 'channel', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } })
 }
 
 test('attributedBody text decodes, short and long', () => {
@@ -130,7 +130,7 @@ test('the pane lists conversations, and a press opens one with its history', asy
   await m.clock.settle()
 
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount({ plugin: 'backchannel', surface, component: 'Pane', props: PANE_PROPS, requestId: 'backchannel' })
+    const ui = await $.ui.mount({ plugin: 'channel', surface, component: 'Pane', props: PANE_PROPS, requestId: 'channel' })
     expect((await ui.find({ key: 'open-2' }))?.text).toBe('Book club')
     expect(await ui.find({ type: 'Button', text: /Book club/ })).toBeDefined()
     await ui.press({ key: 'open-1' })
@@ -169,7 +169,7 @@ test('Enter sends through Messages with the text as an argument, never in the sc
   await openPane($)
 
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount({ plugin: 'backchannel', surface, component: 'Pane', props: PANE_PROPS, requestId: 'backchannel' })
+    const ui = await $.ui.mount({ plugin: 'channel', surface, component: 'Pane', props: PANE_PROPS, requestId: 'channel' })
     await ui.press({ key: 'open-1' })
     await ui.input({ key: 'reply', text: '  ' })
     await ui.input({ key: 'reply', text: '-e "quoted" & end tell' })
@@ -191,7 +191,7 @@ test('without Full Disk Access the pane says how to grant it', async ($, on) => 
   await start($)
   await m.clock.settle()
 
-  const ui = await $.ui.mount({ plugin: 'backchannel', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'backchannel' })
+  const ui = await $.ui.mount({ plugin: 'channel', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'channel' })
   expect(await ui.find({ text: /Full Disk Access/ })).toBeDefined()
 })
 

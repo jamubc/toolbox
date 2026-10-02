@@ -11,7 +11,7 @@ import { imessage } from './providers/imessage'
 // $.state (any plugin reads that) or $.store (it outlives the session), and
 // the mod makes no network request.
 
-const PANE = 'backchannel'
+const PANE = 'channel'
 const MAX_BACKOFF_MS = 300_000
 const KEEP = 200
 
@@ -192,7 +192,7 @@ export const register: Register = on => {
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: 'backchannel',
+      name: 'channel',
       description: `Open your ${spec.label} conversations in a pane`,
       immediate: true,
     })
@@ -212,7 +212,7 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'backchannel' }, async $ => {
+  on('command.run', { command: 'channel' }, async $ => {
     await $.ui.open({ id: PANE, title: spec.label })
     if (view.selected) {
       view.unread.delete(view.selected)
@@ -220,7 +220,7 @@ export const register: Register = on => {
     redraw($, view)
     void pollNow($, view)
 
-    return { text: 'backchannel opened.' }
+    return { text: 'channel opened.' }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

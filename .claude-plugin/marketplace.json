@@ -9,8 +9,8 @@
       "description": "A turbo boost gauge above your prompt: the more of your Claude sessions are working, the higher the needle."
     },
     {
-      "name": "backchannel",
-      "source": "./plugins/backchannel",
+      "name": "channel",
+      "source": "./plugins/channel",
       "description": "Your iMessages in a pane beside Claude Code: read, reply, and get a toast when someone texts you."
     }
   ]
