@@ -32,6 +32,12 @@ describe('fuel dials', () => {
     expect(big).toContain('E')
   })
 
+  test('the context fills, so its dial reads E to F; the plan windows drain, F to E', () => {
+    const ends = (cv: { rows: number; line(r: number): string }) => cv.line(cv.rows - 2).trim()
+    expect(ends(fuelDial(BIG, 0.4, 'CTX', true).toCanvas())).toMatch(/^E.*F$/)
+    expect(ends(fuelDial(BIG, 0.4, '5H').toCanvas())).toMatch(/^F.*E$/)
+  })
+
   test('the needle travels as the tank is used', () => {
     const shots = [0, 0.5, 1].map(frac => text(fuelDial(BIG, frac, '5H').toCanvas()))
     expect(new Set(shots).size).toBe(3)

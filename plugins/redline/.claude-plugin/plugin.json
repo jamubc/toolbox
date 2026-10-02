@@ -1,6 +1,6 @@
 {
   "name": "redline",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "A tachometer for your Claude sessions: when the needle hits the redline, stop spawning and start finishing.",
   "author": { "name": "jamubc" },
   "repository": "https://github.com/jamubc/toolbox",

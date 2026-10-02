@@ -23,16 +23,21 @@ export const BIG: FuelFace = { cols: 15, rows: 6, big: true }
 const GAP = 2
 export const BAND_COLS = SMALL.cols + GAP + 3 * MINI.cols + 2 * GAP
 
+// The tach's hub is left of its panel's middle, its steam lane to the right; centered on the hub it spans this.
+const TACH_SPAN = 2 * (LARGE.cols - LARGE.cx / 2)
+
 /** How the pane fits the three big dials into `columns`: as many to a row as fit, 1 to 3. */
 export type PaneLayout = { perRow: number; cols: number; rows: number }
 
 export function paneLayout(columns: number): PaneLayout {
   const perRow = Math.max(1, Math.min(3, Math.floor((columns + GAP) / (BIG.cols + GAP))))
   const lines = Math.ceil(3 / perRow)
+  const rowCols = perRow * BIG.cols + (perRow - 1) * GAP
   return {
     perRow,
-    cols: Math.max(LARGE.cols, perRow * BIG.cols + (perRow - 1) * GAP),
-    rows: LARGE.rows + lines * (BIG.rows + 1),
+    // Wide enough, where there is room, for the tach's hub to sit over the middle of the dials.
+    cols: Math.max(LARGE.cols, rowCols, Math.min(columns, TACH_SPAN)),
+    rows: LARGE.rows + lines * (BIG.rows + 1) + 1, // a blank row under the last dials, as above each
   }
 }
 
@@ -45,7 +50,12 @@ const FROM = (150 / 180) * Math.PI
 const SWEEP = (120 / 180) * Math.PI
 const RESERVE = 0.85 // the red band starts here, as a fraction of the tank used
 
-export function fuelDial(face: FuelFace, frac: number | null, label: string): Dots {
+/**
+ * `fills` is for a tank that fills as it is used, the context: it reads E at the left and F at the
+ * red end. The plan windows drain, F at the left and E at the red end. Either way the needle
+ * swings right, into the red, as the tank is used.
+ */
+export function fuelDial(face: FuelFace, frac: number | null, label: string, fills = false): Dots {
   const dots = new Dots(face.cols, face.rows)
   const dim = frac === null
   const reserve = (t: number) => t >= RESERVE
@@ -77,8 +87,9 @@ export function fuelDial(face: FuelFace, frac: number | null, label: string): Do
 
   dots.text(0, Math.round(face.cols / 2 - label.length / 2), label, dim ? DIAL_DIM : TICK)
   if (face.big) {
-    dots.text(face.rows - 2, 0, 'F', dim ? DIAL_DIM : TICK)
-    dots.text(face.rows - 2, face.cols - 1, 'E', dim ? DIAL_DIM : RED_C)
+    const [start, end] = fills ? ['E', 'F'] : ['F', 'E']
+    dots.text(face.rows - 2, 0, start, dim ? DIAL_DIM : TICK)
+    dots.text(face.rows - 2, face.cols - 1, end, dim ? DIAL_DIM : RED_C)
   }
   return dots
 }
@@ -86,7 +97,7 @@ export function fuelDial(face: FuelFace, frac: number | null, label: string): Do
 const LABELS = ['5H', '7D', 'CTX'] as const
 
 const dialsFor = (face: FuelFace, tanks: Tanks): Dots[] =>
-  [tanks.fiveHour, tanks.sevenDay, tanks.context].map((frac, i) => fuelDial(face, frac, LABELS[i]!))
+  [tanks.fiveHour, tanks.sevenDay, tanks.context].map((frac, i) => fuelDial(face, frac, LABELS[i]!, i === 2))
 
 /** The band's dash: the tach with the three small dials beside it. */
 export function bandCanvas(reading: Reading, tanks: Tanks): Canvas {
@@ -96,16 +107,16 @@ export function bandCanvas(reading: Reading, tanks: Tanks): Canvas {
   return out.toCanvas()
 }
 
-/** The pane's dash: the tach with the three big dials under it, `layout.perRow` to a row, centered. */
+/** The pane's dash: the tach with the three big dials under it, `layout.perRow` to a row, each row centered. */
 export function paneCanvas(reading: Reading, tanks: Tanks, layout: PaneLayout = WIDE): Canvas {
   const out = new Dots(layout.cols, layout.rows)
-  out.blit(tachDots(LARGE, reading), 0, Math.floor((layout.cols - LARGE.cols) / 2))
-  const rowCols = layout.perRow * BIG.cols + (layout.perRow - 1) * GAP
-  const left = Math.floor((layout.cols - rowCols) / 2)
-  dialsFor(BIG, tanks).forEach((panel, i) => {
+  out.blit(tachDots(LARGE, reading), 0, Math.max(0, Math.min(layout.cols - LARGE.cols, Math.round(layout.cols / 2 - LARGE.cx / 2))))
+  const dials = dialsFor(BIG, tanks)
+  dials.forEach((panel, i) => {
     const line = Math.floor(i / layout.perRow)
-    const slot = i % layout.perRow
-    out.blit(panel, LARGE.rows + 1 + line * (BIG.rows + 1), left + slot * (BIG.cols + GAP))
+    const inLine = Math.min(layout.perRow, dials.length - line * layout.perRow)
+    const left = Math.floor((layout.cols - (inLine * BIG.cols + (inLine - 1) * GAP)) / 2)
+    out.blit(panel, LARGE.rows + 1 + line * (BIG.rows + 1), left + (i % layout.perRow) * (BIG.cols + GAP))
   })
   return out.toCanvas()
 }

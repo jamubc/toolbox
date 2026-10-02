@@ -9,7 +9,7 @@ export type Dial = { cx: number; cy: number; r: number; from: number; sweep: num
 
 /** A shallow dial whose pivot sits at the bottom edge of a `cols` × `rows` panel. */
 export function shallow(cols: number, rows: number, from: number, sweep: number): Dial {
-  const cx = cols
+  const cx = cols - 0.5 // the panel's middle, between two dot columns, so the dial rounds the same both sides
   const cy = rows * 4 - 2
   const reach = Math.max(Math.abs(Math.cos(from)), Math.abs(Math.cos(from - sweep)))
   const r = Math.floor(Math.min((cols - 2) / reach, cy - 5))

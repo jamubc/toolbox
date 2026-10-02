@@ -285,7 +285,7 @@ describe('fuel', () => {
       await ui.unmount()
       return [r?.props.columns, r?.props.rows]
     }
-    expect(await sizeAt(34)).toEqual([2 * BIG.cols + 2, LARGE.rows + 2 * (BIG.rows + 1)])
+    expect(await sizeAt(34)).toEqual([34, LARGE.rows + 2 * (BIG.rows + 1) + 1])
     expect(await sizeAt(BIG.cols)).toEqual([LARGE.cols, TALL.rows])
     expect(await sizeAt(80)).toEqual([WIDE.cols, WIDE.rows])
     expect(await sizeAt(BIG.cols - 1)).toEqual([LARGE.cols, LARGE.rows])

@@ -348,7 +348,7 @@ export const register: Register = (on, options) => {
     mounted(view)
     const rasterCols = fuel?.cols ?? LARGE.cols
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" paddingTop={1}>
         <Box flexDirection={e.props.bodyColumns >= rasterCols + 24 ? 'row' : 'column'}>
           <Raster key="gauge" columns={rasterCols} rows={fuel?.rows ?? LARGE.rows} cells={cells(view)} />
           {words}
