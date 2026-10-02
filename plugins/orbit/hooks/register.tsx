@@ -4,7 +4,7 @@
 // session starts. The pane draws the globe (pixels where the terminal can, half-blocks
 // elsewhere), the log, and a replay of any saved trace.
 
-import { atom, read, update } from 'claude-code'
+import { atom, derive, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { OrbitAsk, OrbitCapabilities, OrbitEvent, OrbitHome, OrbitReplay, OrbitRule, OrbitSession } from '../types'
@@ -63,6 +63,90 @@ const spin = atom({ plugin: 'orbit', key: 'spin' } as const, null as number | nu
 const isPaneOpen = atom({ plugin: 'orbit', key: 'isPaneOpen' } as const, false)
 const ask = atom({ plugin: 'orbit', key: 'ask' } as const, null as OrbitAsk | null)
 const renderer = atom({ plugin: 'orbit', key: 'renderer' } as const, 'cells' as 'image' | 'cells')
+const seeded = atom({ plugin: 'orbit', key: 'seeded' } as const, false)
+
+// /clear ends the session but not the process: the host's `$.state` starts over empty while this
+// module, its pane and its timers live on, so read straight from the host the trace, the home
+// point and the capabilities are suddenly blank. `seeded` is false exactly then, and before the
+// first `session.start`. `snapshot` is what the panes draw from, read in one go: the host's while
+// `seeded`, else what this process last saw; `write` puts the kept values back before the first
+// change after a /clear, and a render that finds `seeded` false schedules that.
+type Snapshot = {
+  events: OrbitEvent[]
+  rules: OrbitRule[]
+  mode: Mode
+  scope: 'session' | 'all'
+  sessions: OrbitSession[]
+  home: OrbitHome
+  selectedId: string
+  capabilities: OrbitCapabilities
+  replay: OrbitReplay | null
+  spin: number | null
+  isPaneOpen: boolean
+  ask: OrbitAsk | null
+  renderer: 'image' | 'cells'
+}
+const KEYS = ['events', 'rules', 'mode', 'scope', 'sessions', 'home', 'selectedId', 'capabilities', 'replay', 'spin', 'isPaneOpen', 'ask', 'renderer'] as const
+let kept: Snapshot = {
+  events: [], rules: [], mode: 'denylist', scope: 'session', sessions: [], home: { lat: 0, lon: 0, label: '', source: 'none' }, selectedId: '',
+  capabilities: { platform: '', tools: true, sockets: '', bytes: '', node: false, geo: 'missing', geoNote: '', proxy: 'off', proxyPort: 0, self: 0 },
+  replay: null, spin: null, isPaneOpen: false, ask: null, renderer: 'cells',
+}
+let wasLive: boolean | null = null // what the last read saw; null before the first
+const snapshot = derive(
+  [seeded, events, rules, mode, scope, sessions, home, selectedId, capabilities, replayState, spin, isPaneOpen, ask, renderer],
+  (isLive, events, rules, mode, scope, sessions, home, selectedId, capabilities, replay, spin, isPaneOpen, ask, renderer): Snapshot => {
+    wasLive = isLive
+    if (!isLive) return kept
+    kept = { events, rules, mode, scope, sessions, home, selectedId, capabilities, replay, spin, isPaneOpen, ask, renderer }
+    return kept
+  },
+)
+
+/** The one place the atoms are written: each key to its own, as the validator asks. */
+async function put<K extends keyof Snapshot>($: EngineInterface, key: K, value: Snapshot[K]): Promise<void> {
+  switch (key) {
+    case 'events': await update($, events, () => value as Snapshot['events']); break
+    case 'rules': await update($, rules, () => value as Snapshot['rules']); break
+    case 'mode': await update($, mode, () => value as Snapshot['mode']); break
+    case 'scope': await update($, scope, () => value as Snapshot['scope']); break
+    case 'sessions': await update($, sessions, () => value as Snapshot['sessions']); break
+    case 'home': await update($, home, () => value as Snapshot['home']); break
+    case 'selectedId': await update($, selectedId, () => value as Snapshot['selectedId']); break
+    case 'capabilities': await update($, capabilities, () => value as Snapshot['capabilities']); break
+    case 'replay': await update($, replayState, () => value as Snapshot['replay']); break
+    case 'spin': await update($, spin, () => value as Snapshot['spin']); break
+    case 'isPaneOpen': await update($, isPaneOpen, () => value as Snapshot['isPaneOpen']); break
+    case 'ask': await update($, ask, () => value as Snapshot['ask']); break
+    case 'renderer': await update($, renderer, () => value as Snapshot['renderer']); break
+  }
+}
+
+/** After a /clear (or at the first start), writes what this process kept back to the host. */
+let reseeding: Promise<void> | null = null
+function reseed($: EngineInterface): Promise<void> {
+  reseeding ??= (async () => {
+    try {
+      if (await read($, seeded)) return
+      for (const key of KEYS) await put($, key, kept[key])
+      await update($, seeded, () => true)
+      wasLive = true
+    } finally {
+      reseeding = null
+    }
+  })()
+  return reseeding
+}
+
+/** Changes one value from what `snapshot` reads, and keeps it here too. */
+async function write<K extends keyof Snapshot>($: EngineInterface, key: K, change: (now: Snapshot[K]) => Snapshot[K]): Promise<void> {
+  // `kept` is current once a read has seen the host live: only this module writes these values.
+  if (wasLive === null) await read($, snapshot)
+  if (!wasLive) await reseed($)
+  const next = change(kept[key])
+  kept = { ...kept, [key]: next }
+  await put($, key, next)
+}
 
 type View = { requestId: string; columns: number; rows: number; renderer: 'image' | 'cells' }
 
@@ -135,7 +219,7 @@ function parseLocation(text: string): OrbitHome | null {
 
 async function setCaps($: EngineInterface, fields: Partial<OrbitCapabilities>): Promise<void> {
   caps = { ...caps, ...fields }
-  await update($, capabilities, () => caps)
+  await write($, 'capabilities', () => caps)
 }
 
 async function checkCapabilities($: EngineInterface): Promise<void> {
@@ -193,8 +277,8 @@ async function poll($: EngineInterface): Promise<void> {
         all = all.map(s => ({ ...s, cwd: cwds.get(s.pid) ?? '' }))
       }
       roots = all.map(s => s.pid)
-      const before = await read($, sessions)
-      if (JSON.stringify(before) !== JSON.stringify(all)) await update($, sessions, () => all)
+      const before = (await read($, snapshot)).sessions
+      if (JSON.stringify(before) !== JSON.stringify(all)) await write($, 'sessions', () => all)
     }
     const next = new Map<number, Owner>()
     for (const root of roots) {
@@ -247,7 +331,7 @@ async function lookupPending($: EngineInterface): Promise<void> {
 async function flush($: EngineInterface): Promise<void> {
   if (!live.isDirty) return
   live.isDirty = false
-  await update($, events, () => live.events.slice(-600))
+  await write($, 'events', () => live.events.slice(-600))
   if (options.statusLine) {
     const s = summarize(live.events.filter(e => currentScope === 'all' || e.sessionPid === self || e.sessionPid === 0))
     const text = `orbit · ${s.hosts.length} host${s.hosts.length === 1 ? '' : 's'} · ${s.countries.length} ${s.countries.length === 1 ? 'country' : 'countries'}${s.blocked ? ` · ${s.blocked} blocked` : ''}`
@@ -302,7 +386,7 @@ async function frame($: EngineInterface): Promise<void> {
       replay = stepped
       if (t - lastReplayWrite > 400 || !replay.isPlaying) {
         lastReplayWrite = t
-        await update($, replayState, () => summaryOf(replay!))
+        await write($, 'replay', () => summaryOf(replay!))
       }
     }
   }
@@ -337,7 +421,7 @@ async function frame($: EngineInterface): Promise<void> {
           imageDenies = 0
           currentRenderer = 'cells'
           views = views.filter(v => v !== view)
-          await update($, renderer, () => 'cells')
+          await write($, 'renderer', () => 'cells')
           $.ui.toast('This terminal cannot show the globe as pixels; drawing it in colored blocks instead.')
         }
       }
@@ -361,19 +445,19 @@ async function pickRenderer($: EngineInterface): Promise<'image' | 'cells'> {
 async function saveRules($: EngineInterface, next: Rule[]): Promise<void> {
   currentRules = next
   await $.store.set('rules', next)
-  await update($, rules, () => next)
+  await write($, 'rules', () => next)
 }
 
 async function setHome($: EngineInterface, next: OrbitHome): Promise<void> {
   currentHome = next
-  await update($, home, () => next)
+  await write($, 'home', () => next)
   if (next.source === 'lookup') await $.store.set('home', next)
 }
 
 async function askUser($: EngineInterface, subject: { kind: 'host' | 'mcp'; subject: string }, tool: string, summary: string): Promise<'allow' | 'deny'> {
   if (pendingAsk) return 'deny'
   const question: OrbitAsk = { id: `${now()}`, tool, kind: subject.kind, subject: subject.subject, summary }
-  await update($, ask, () => question)
+  await write($, 'ask', () => question)
   const opened = await $.ui.open({ id: ASK_PANE, title: 'orbit: allow this connection?', focus: true, closeOnEscape: true, holdToasts: true, rows: 7 })
   if (!opened.isPlaced) $.ui.toast(`orbit: ${tool} wants ${subject.subject}: widen the terminal to answer, or it is denied in 8 s.`)
   const answer = await new Promise<'allow' | 'deny'>(resolve => {
@@ -381,7 +465,7 @@ async function askUser($: EngineInterface, subject: { kind: 'host' | 'mcp'; subj
     $.clock.after(ASK_MS, () => resolve('deny'))
   })
   pendingAsk = null
-  await update($, ask, () => null)
+  await write($, 'ask', () => null)
   await $.ui.close({ id: ASK_PANE }).catch(() => {})
   return answer
 }
@@ -548,31 +632,31 @@ function actionsFor($: EngineInterface): Actions {
     setScope: s => void setScope($, s),
     select: id => {
       currentSelected = currentSelected === id ? '' : id
-      void update($, selectedId, () => currentSelected)
+      void write($, 'selectedId', () => currentSelected)
     },
     spin: delta => {
       currentSpin = delta === null ? null : (currentSpin ?? 0) + delta
-      void update($, spin, () => currentSpin)
+      void write($, 'spin', () => currentSpin)
     },
     replayToggle: () => {
       if (!replay) return
       replay = { ...replay, isPlaying: !replay.isPlaying, position: replay.position >= replay.end ? replay.start : replay.position }
-      void update($, replayState, () => summaryOf(replay!))
+      void write($, 'replay', () => summaryOf(replay!))
     },
     replaySeek: direction => {
       if (!replay) return
       const step = (replay.end - replay.start) / 20
       replay = { ...replay, position: Math.max(replay.start, Math.min(replay.end, replay.position + direction * step)) }
-      void update($, replayState, () => summaryOf(replay!))
+      void write($, 'replay', () => summaryOf(replay!))
     },
     replaySpeed: () => {
       if (!replay) return
       replay = { ...replay, speed: replay.speed >= 16 ? 1 : replay.speed * 2 }
-      void update($, replayState, () => summaryOf(replay!))
+      void write($, 'replay', () => summaryOf(replay!))
     },
     replayClose: () => {
       replay = null
-      void update($, replayState, () => null)
+      void write($, 'replay', () => null)
     },
     downloadGeo: level => void downloadGeo($, level).then(text => $.ui.toast(text)),
     exportTrace: () => void exportTrace($, '').then(text => $.ui.toast(text)),
@@ -590,7 +674,7 @@ function actionsFor($: EngineInterface): Actions {
 
 async function setScope($: EngineInterface, s: 'session' | 'all'): Promise<void> {
   currentScope = s
-  await update($, scope, () => s)
+  await write($, 'scope', () => s)
   void poll($)
 }
 
@@ -630,10 +714,10 @@ async function openReplayFile($: EngineInterface, pathText: string): Promise<str
   const loaded = openReplay(path, fromJsonl(text))
   if (!loaded) return `${path} holds no events.`
   replay = loaded
-  await update($, replayState, () => summaryOf(loaded))
-  if (!(await read($, isPaneOpen))) {
+  await write($, 'replay', () => summaryOf(loaded))
+  if (!((await read($, snapshot)).isPaneOpen)) {
     await $.ui.open({ id: PANE, title: 'Orbit' })
-    await update($, isPaneOpen, () => true)
+    await write($, 'isPaneOpen', () => true)
   }
   return `Replaying ${loaded.events.length} events from ${path} at ${loaded.speed}×.`
 }
@@ -669,25 +753,27 @@ export const register: Register = (on, opts) => {
     homeDir = (await $.env.get('HOME')) ?? ''
     sessionId = await $.session.id().catch(() => '')
 
-    live.load(await read($, events))
+    await reseed($)
+    const held = await read($, snapshot)
+    live.load(held.events)
     const stored = (await $.store.get('rules')) as Rule[] | undefined
     currentRules = Array.isArray(stored) ? stored : []
-    await update($, rules, () => currentRules)
-    await update($, mode, () => currentMode)
-    currentScope = await read($, scope)
-    currentSpin = await read($, spin)
-    currentSelected = await read($, selectedId)
+    await write($, 'rules', () => currentRules)
+    await write($, 'mode', () => currentMode)
+    currentScope = held.scope
+    currentSpin = held.spin
+    currentSelected = held.selectedId
     const configured = parseLocation(options.location ?? '')
     const remembered = (await $.store.get('home')) as OrbitHome | undefined
     currentHome = configured ?? (remembered && remembered.source === 'lookup' ? remembered : { lat: 0, lon: 0, label: '', source: 'none' })
-    await update($, home, () => currentHome)
+    await write($, 'home', () => currentHome)
     currentRenderer = e.surface === 'terminal' ? await pickRenderer($) : 'cells'
-    await update($, renderer, () => currentRenderer)
+    await write($, 'renderer', () => currentRenderer)
     const isOpen = (await $.ui.panes()).some(p => p.id === PANE)
-    await update($, isPaneOpen, () => isOpen)
-    await update($, ask, () => null)
+    await write($, 'isPaneOpen', () => isOpen)
+    await write($, 'ask', () => null)
     replay = null
-    await update($, replayState, () => null)
+    await write($, 'replay', () => null)
 
     if (e.isInteractive) {
       void (async () => {
@@ -700,6 +786,14 @@ export const register: Register = (on, opts) => {
       $.clock.every(GEO_MS, () => void lookupPending($).catch(() => {}))
       $.clock.every(FLUSH_MS, () => void flush($).catch(() => {}))
     }
+    return result
+  })
+
+  // /clear: the pane, the trace and the timers stay up, so what they show is written back as soon
+  // as the host's state is the new session's (now, or from the next event if that comes later).
+  on('session.end', async ($, e, next) => {
+    const result = await next(e)
+    if (e.reason === 'clear') await reseed($).catch(() => {})
     return result
   })
 
@@ -717,7 +811,7 @@ export const register: Register = (on, opts) => {
     if (v?.action === 'deny') {
       const why = v.rule ? describeRule(v.rule) : currentMode === 'allowlist' ? `not on the allow list (${v.kind}:${v.subject})` : `denied when asked (${v.kind}:${v.subject})`
       live.recordTool(intent, owner, now(), 'blocked', why)
-      void flush($)
+      await flush($)
       return { deny: `orbit blocked this call: ${why}. /orbit allow ${v.kind}:${v.subject} lets it through.` }
     }
     const recorded = live.recordTool(intent, owner, now(), 'open')
@@ -753,16 +847,17 @@ export const register: Register = (on, opts) => {
   })
 
   on('command.run', { command: 'orbit' }, async ($, e) => {
+    await reseed($)
     const [word = '', ...rest] = e.args.trim().split(/\s+/)
     const arg = rest.join(' ')
     switch (word) {
       case '': {
-        if (await read($, isPaneOpen)) {
+        if ((await read($, snapshot)).isPaneOpen) {
           await $.ui.close({ id: PANE })
           return { text: 'Orbit closed.' }
         }
         const opened = await $.ui.open({ id: PANE, title: 'Orbit' })
-        await update($, isPaneOpen, () => true)
+        await write($, 'isPaneOpen', () => true)
         return { text: opened.isPlaced ? 'Orbit opened.' : 'Orbit opened; widen the terminal to see it.' }
       }
       case 'all':
@@ -785,7 +880,7 @@ export const register: Register = (on, opts) => {
       case 'mode': {
         if (!MODES.includes(arg as Mode)) return { text: `Modes: ${MODES.join(', ')}. Currently ${currentMode}.` }
         currentMode = arg as Mode
-        await update($, mode, () => currentMode)
+        await write($, 'mode', () => currentMode)
         return { text: `Enforcement: ${currentMode}${currentMode === 'ask' ? ' (a dialog asks about each new host; 8 seconds, then deny)' : ''}. /config → Enforcement sets the default.` }
       }
       case 'export':
@@ -793,7 +888,7 @@ export const register: Register = (on, opts) => {
       case 'replay':
         if (arg === 'off' || arg === 'close') {
           replay = null
-          await update($, replayState, () => null)
+          await write($, 'replay', () => null)
           return { text: 'Replay closed; live again.' }
         }
         return { text: await openReplayFile($, arg) }
@@ -830,7 +925,7 @@ export const register: Register = (on, opts) => {
   on('ui.close', async ($, e, next) => {
     const result = await next(e)
     if (e.id === PANE) {
-      await update($, isPaneOpen, () => false)
+      await write($, 'isPaneOpen', () => false)
       views = views.filter(v => v.requestId !== PANE)
     }
     if (e.id === ASK_PANE) pendingAsk?.resolve('deny')
@@ -838,10 +933,9 @@ export const register: Register = (on, opts) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const [shownEvents, currentRules_, m, s, h, sel, c, r, all, rend, sp] = await Promise.all([
-      read($, events), read($, rules), read($, mode), read($, scope), read($, home), read($, selectedId), read($, capabilities), read($, replayState), read($, sessions), read($, renderer), read($, spin),
-    ])
-    void currentRules_
+    // Drawn from what this process kept after a /clear; the host gets it back off the render.
+    if (!(await read($, seeded))) $.clock.after(0, () => void reseed($).catch(() => {}))
+    const { events: shownEvents, mode: m, scope: s, home: h, selectedId: sel, capabilities: c, replay: r, sessions: all, renderer: rend, spin: sp } = await read($, snapshot)
     const listed = replay ? eventsAt(replay, replay.position) : s === 'all' ? shownEvents : shownEvents.filter(ev => ev.sessionPid === c.self || ev.sessionPid === 0)
     let globe: GlobeBox | null = null
     if (e.surface === 'terminal') {
@@ -877,7 +971,8 @@ export const register: Register = (on, opts) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: ASK_PANE }, async ($, e) => {
-    const question = await read($, ask)
+    if (!(await read($, seeded))) $.clock.after(0, () => void reseed($).catch(() => {}))
+    const question = (await read($, snapshot)).ask
     const { Text } = $.ui.resolve(e)
     if (!question) return <Text dimColor>Nothing to ask.</Text>
     return drawAsk($.ui.resolve(e) as Table, question, (answer, isAlways) => {

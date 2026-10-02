@@ -81,6 +81,7 @@ micro runs for real inside the pane: your own micro settings, colors and plugins
 - **Trash, never delete.** It uses macOS's `trash`, or `gio trash` or `trash-put` on Linux, after a confirmation. If none exists, nothing is deleted.
 - **No overwrites.** Rename, new file, new folder and duplicate refuse a name that already exists, and names cannot contain `/` or be `..`.
 - **Unsaved edits.** If Claude Code exits or is killed, or atlas reloads, while micro is open, micro closes and keeps a backup. Reopen the file and micro offers to recover it.
+- **/clear and /compact.** The pane, the tree and an open editor carry on through both: `/clear` starts a new session in the same process, so atlas keeps what it was showing and writes it into the new one.
 
 </details>
 

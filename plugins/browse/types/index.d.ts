@@ -14,6 +14,8 @@ declare module 'claude-code' {
       message: string | null
       page: Page
       renderer: Renderer
+      /** True once this session's values are written; false after a /clear empties them. */
+      seeded: boolean
     }
   }
 }
