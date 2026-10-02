@@ -18,5 +18,6 @@ Little tools for [Claude Code](https://claude.com/product/claude-code).
 | [instantnotes](plugins/instantnotes/README.md) | `/plugin install instantnotes@toolbox` | Your InstantNotes in a pane beside Claude Code: search, read a note as Markdown, and capture a new one with /note. |
 | [browse](plugins/browse/README.md) | `/plugin install browse@toolbox` | Adds /browse: a web browser in a pane beside Claude Code. |
 | [atlas](plugins/atlas/README.md) | `/plugin install atlas@toolbox` | Adds /atlas: a file explorer in a pane beside Claude Code. Open a file to edit it in micro. |
+| [orbit](plugins/orbit/README.md) | `/plugin install orbit@toolbox` | A globe of everything your Claude session talks to, with a deny-list that blocks before a call runs. Little Snitch for Claude. |
 
 Requires Claude Code 2.1.287 or later. MIT licensed.

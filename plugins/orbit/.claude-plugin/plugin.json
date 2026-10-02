@@ -1,0 +1,74 @@
+{
+  "name": "orbit",
+  "version": "0.1.0",
+  "description": "A globe of everything your Claude session talks to: tool calls, sockets and bytes traced to hosts, countries and orgs, with a deny-list that blocks before a call runs.",
+  "author": { "name": "jamubc" },
+  "repository": "https://github.com/jamubc/toolbox",
+  "license": "MIT",
+  "keywords": ["mod", "network", "globe", "trace", "firewall", "privacy"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "location": {
+      "type": "string",
+      "title": "Your location",
+      "description": "Latitude and longitude of the red dot, e.g. \"49.28,-123.12 Vancouver\". Empty: use /orbit locate once, or the globe centers on 0,0.",
+      "default": ""
+    },
+    "enforcement": {
+      "type": "string",
+      "title": "Enforcement",
+      "description": "off: watch only. denylist: block hosts and servers you listed with /orbit block. allowlist: block everything not allowed with /orbit allow. ask: ask about each new host (8 seconds, then deny).",
+      "options": ["off", "denylist", "allowlist", "ask"],
+      "default": "denylist"
+    },
+    "picture": {
+      "type": "string",
+      "title": "Globe picture",
+      "description": "auto: real pixels where the terminal draws them (kitty, Ghostty), colored half-blocks elsewhere. image or blocks force one.",
+      "options": ["auto", "image", "blocks"],
+      "default": "auto"
+    },
+    "geoDatabase": {
+      "type": "string",
+      "title": "Geo database",
+      "description": "Path of a MaxMind-format city or country database (DB-IP Lite, GeoLite2). Empty: the DB-IP Lite files /orbit geodb downloads into ~/.claude/orbit/geo.",
+      "default": ""
+    },
+    "asnDatabase": {
+      "type": "string",
+      "title": "ASN database",
+      "description": "Path of a MaxMind-format ASN database for the org column. Empty: the DB-IP ASN Lite file /orbit geodb downloads.",
+      "default": ""
+    },
+    "proxy": {
+      "type": "boolean",
+      "title": "Proxy layer",
+      "description": "Run a local HTTPS proxy for commands and MCP servers this session starts, so their hosts, bytes and latency are seen without decrypting anything. Sets HTTPS_PROXY for them.",
+      "default": false
+    },
+    "fadeSeconds": {
+      "type": "number",
+      "title": "Arc fade",
+      "description": "How many seconds a finished connection's arc stays on the globe.",
+      "default": 25
+    },
+    "autoLog": {
+      "type": "boolean",
+      "title": "Write the trace",
+      "description": "Keep the session's trace as JSONL in ~/.claude/orbit/traces, for /orbit replay.",
+      "default": true
+    },
+    "statusLine": {
+      "type": "boolean",
+      "title": "Status line",
+      "description": "Show a count of hosts and countries on the status line.",
+      "default": false
+    },
+    "node": {
+      "type": "string",
+      "title": "Node path",
+      "description": "The node executable for the geo and proxy helpers; empty looks on PATH.",
+      "default": ""
+    }
+  }
+}
