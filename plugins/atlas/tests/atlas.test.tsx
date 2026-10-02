@@ -18,7 +18,7 @@ const pane = (bodyColumns: number) => ({
   },
 } as const)
 
-type Node = { kind: 'file' | 'dir'; text?: string }
+type Node = { kind: 'file' | 'dir'; text?: string; mtimeMs?: number }
 type World = {
   files: Map<string, Node>
   runs: string[][]
@@ -46,7 +46,7 @@ function fakeWorld(on: On, surfaces: string[] = ['terminal'], answer = 'Cancel')
   const stat = (path: string) => {
     const node = files.get(path)
     if (!node) throw new Error(`ENOENT: ${path}`)
-    return { kind: node.kind, size: node.text?.length ?? 0, mtimeMs: 0, isLink: false, realPath: path }
+    return { kind: node.kind, size: node.text?.length ?? 0, mtimeMs: node.mtimeMs ?? 0, isLink: false, realPath: path }
   }
   let release!: () => void
   const editorRuns = new Promise<void>(resolve => {
@@ -380,6 +380,16 @@ describe('what git and the folder say', () => {
     expect(await ui.find({ text: /export const x = 1/ })).toBeDefined()
     await ui.press({ key: 'r:src/main.ts:1' })
     expect((await ui.find({ type: 'Code' }))?.props).toMatchObject({ source: 'export const x = 1\n', startLine: 1 })
+    await ui.unmount()
+  })
+
+  test('a picture previews when its modified time has a fraction of a millisecond', async ($, on) => {
+    const world = fakeWorld(on)
+    world.files.set(`${ROOT}/shot.png`, { kind: 'file', text: 'png', mtimeMs: 1790921112850.018 })
+    await start($)
+    const ui = await $.ui.mount({ plugin: 'atlas', surface: 'terminal', ...pane(80) })
+    await ui.press({ key: 'n:shot.png' })
+    expect((await ui.find({ type: 'Image' }))?.props.source).toMatchObject({ file: `${ROOT}/shot.png`, generation: 1790921112850 })
     await ui.unmount()
   })
 

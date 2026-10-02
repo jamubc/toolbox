@@ -885,7 +885,7 @@ export const register: Register = (on, options: Options) => {
         )
       } else if (shown.kind === 'image' && 'Image' in elements && pixels) {
         const room = { columns: Math.max(10, Math.min(isWide ? width - treeWidth - 4 : width - 2, 80)), rows: Math.max(4, Math.min(24, Math.floor(paneBody.rows * 0.5))) }
-        source = <elements.Image key="picture" source={{ file: shown.path, format: 'png', generation: info.mtimeMs }} columns={room.columns} rows={room.rows} alt={nameOf(shown.path)} />
+        source = <elements.Image key="picture" source={{ file: shown.path, format: 'png', generation: Math.trunc(info.mtimeMs) }} columns={room.columns} rows={room.rows} alt={nameOf(shown.path)} />
       } else {
         source = <Text dimColor>{shown.kind === 'binary' ? 'Binary file: no preview.' : shown.kind === 'large' ? 'Too large to preview here.' : shown.kind === 'image' ? 'A picture: open it with its app to see it.' : `Cannot read it: ${shown.reason}`}</Text>
       }
