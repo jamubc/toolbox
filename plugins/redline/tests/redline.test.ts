@@ -5,7 +5,7 @@ import type { On } from 'claude-code'
 import type { Canvas } from '../hooks/canvas'
 import { BAND_COLS, BIG, TALL, WIDE } from '../hooks/fuel'
 import { LARGE, Needle, SCALE, SMALL, gauge, stageFor } from '../hooks/gauge'
-import { cwdsIn, sessionOf, sessionsIn } from '../hooks/sessions'
+import { cwdsIn, selfIn, sessionOf, sessionsIn } from '../hooks/sessions'
 
 // A real `ps -x -o pid=,ppid=,tty=,args=` table: five sessions in terminals, one mid-turn (its
 // caffeinate child), plus the daemon and its helpers, which do not count.
@@ -25,7 +25,7 @@ const PS = `
 const LSOF = ['p94901', 'fcwd', 'n/Users/jam/OpenCAD', 'p15621', 'fcwd', 'n/Users/jam/toolbox', 'p80793', 'fcwd', 'n/Users/jam/jamcli'].join('\n')
 
 // What `sh -c 'echo $$; exec ps …'` prints when this session is the one on ttys010.
-const SH = `70001\n${PS}70001 15621 ttys010  ps -x -o pid=,ppid=,tty=,args=\n`
+const SH = `${PS}70001 15621 ttys010  ps -x -o pid=,ppid=,tty=,command=\n70003 80793 ttys040  ps -x -o pid=,ppid=,tty=,args=\n` // the self lookup's table, with another session's poll in it
 
 const text = (cv: Canvas) => Array.from({ length: cv.rows }, (_, r) => cv.line(r)).join('\n')
 
@@ -43,7 +43,7 @@ const USAGE = {
 function engine(on: On, statuses: (string | undefined)[] = []) {
   const clock = mock.clock(on)
   on('process.run', ($, e) => {
-    const stdout = e.argv[0] === 'ps' ? PS : e.argv[0] === 'lsof' ? LSOF : e.argv[0] === 'sh' ? SH : ''
+    const stdout = e.argv[0] === 'ps' ? SH : e.argv[0] === 'lsof' ? LSOF : ''
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('session.usage', () => ({ value: USAGE }))
@@ -103,6 +103,12 @@ describe('census', () => {
   test('finds the session a process runs under', async () => {
     expect(sessionOf(SH, 70001)).toBe(15621)
     expect(sessionOf(SH, 25341)).toBe(0)
+  })
+
+  test('finds this session from its own ps row, and waits when two look themselves up at once', async () => {
+    expect(selfIn(SH)).toBe(15621)
+    expect(selfIn(PS)).toBe(0)
+    expect(selfIn(`${SH}70002 80793 ttys040  ps -x -o pid=,ppid=,tty=,command=\n`)).toBe(0)
   })
 })
 

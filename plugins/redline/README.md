@@ -1,6 +1,6 @@
 # redline
 
-Too many Claudes going at once? Feeling overwhelemed? redline puts a guage into claude so you can plan your time better.
+Too many Claudes going at once? Feeling overwhelmed? redline puts a gauge above your Claude Code prompt that counts how many of your sessions are working, so you can plan your time better.
 
 <img width="638" height="98" alt="image" src="https://github.com/user-attachments/assets/c7d1ae26-46c2-4222-be22-d6f85e3db13f" />
 
@@ -49,7 +49,7 @@ With **Show the fuel gauges** on, three more dials ride along: beside the tachom
 | 7D | Your plan's seven-day rate-limit window. |
 | CTX | This session's context, filling as the conversation grows. |
 
-Each needle travels from F (full) to E (empty) as its tank is used, and the last stretch before E is the red reserve. The plan dials need a subscription; CTX works for everyone. A dial the engine has no reading for stays dim.
+On every dial the needle swings right, into the red, as its tank is used. The plan windows drain, so 5H and 7D read F (full) to E (empty); the context fills, so CTX reads E to F. The plan dials need a subscription; CTX works for everyone. A dial the engine has no reading for stays dim.
 
 </details>
 
@@ -74,22 +74,18 @@ Each needle travels from F (full) to E (empty) as its tank is used, and the last
 
 </details>
 
-<details>
-<summary>Functions</summary>
+## What it runs, reads and sends
 
-<br>
+redline runs two read-only programs on your machine and sends nothing anywhere. It makes no network requests.
 
-- Every two seconds it reads `ps` and `lsof`.
-- A session is a `claude` process attached to a terminal.
-- A session counts as working while Claude Code holds a `caffeinate` child process, which happens on macOS during a turn. On Linux every session reads as idle.
-- With the fuel gauges on, it reads `$.session.usage()` at the start of a session and again on every `session.measure`: after each turn, and when a rate-limit window moves a whole point.
+| Program | Exactly what it runs | Why |
+| --- | --- | --- |
+| `ps` | `ps -x -o pid=,ppid=,tty=,args=`, every two seconds | Lists your own processes, to find the `claude` sessions in your terminals and which are mid-turn. |
+| `ps` | `ps -x -o pid=,ppid=,tty=,command=`, once a session until it succeeds | The same table in a second format, so redline can tell which session is this one and mark it `(this one)` in the pane. |
+| `lsof` | `lsof -a -d cwd -Fn -p <pids>`, every two seconds, where `<pids>` are the `claude` sessions `ps` just found | Reads each session's working directory, shown beside it in the pane. |
 
-</details>
-
-<details>
-<summary>Privacy</summary>
-
-- Read-only: it never starts or stops anything.
-- It reads process information from `ps` and `lsof`, and with the fuel gauges on, the session usage figures the status line already has.
-
-</details>
+- A session is a `claude` process attached to a terminal. It counts as working while Claude Code holds a `caffeinate` child process, which happens on macOS during a turn. On Linux every session reads as idle.
+- With the fuel gauges on, it reads this session's usage (`session.usage`, and the `session.measure` event after each turn): the context fill and your plan's rate-limit percentages, the same figures the status line has. They are drawn on the dials and kept in this session's plugin state; they are never written to disk by redline or sent anywhere.
+- It never starts, stops or changes another process. The process tables are read, parsed in memory and dropped.
+- It hooks `command.run` only for its own `/redline` command, which opens and closes the pane and sets the demo count. It does not see or change any other command.
+- It hooks `ui.close` to notice when you close its pane, and `session.start`, `session.end` and `session.measure` to keep the gauge right across `/clear`.

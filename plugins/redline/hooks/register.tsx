@@ -13,7 +13,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { RedlineSession, RedlineUsage } from '../types'
 import { BAND_COLS, BIG, TALL, bandCanvas, fracOf, paneCanvas, paneLayout, tankFrac, usageFrom, type PaneLayout, type Tanks } from './fuel'
 import { LARGE, Needle, SCALE, SMALL, colorFor, gauge, stageFor, type Face } from './gauge'
-import { PS_ARGV, cwdsIn, lsofArgv, sessionOf, sessionsIn } from './sessions'
+import { cwdsIn, lsofArgv, selfIn, sessionsIn } from './sessions'
 
 const PANE = 'redline'
 const FPS = 10
@@ -183,7 +183,8 @@ async function refreshUsage($: EngineInterface): Promise<void> {
 }
 
 async function poll($: EngineInterface): Promise<void> {
-  const ps = await $.process.run(PS_ARGV, { timeoutMs: 5000 })
+  // The README's "What it runs" names these two programs; both only read the process table.
+  const ps = await $.process.run(['ps', '-x', '-o', 'pid=,ppid=,tty=,args='], { timeoutMs: 5000 })
   if (ps.exitCode !== 0) return
   let found = sessionsIn(ps.stdout)
   if (found.length) {
@@ -191,19 +192,12 @@ async function poll($: EngineInterface): Promise<void> {
     const cwds = cwdsIn((await $.process.run(lsofArgv(found.map(s => s.pid)), { timeoutMs: 5000 })).stdout)
     found = found.map(s => ({ ...s, cwd: cwds.get(s.pid) ?? '' }))
   }
-  if (self === null) self = await findSelf($)
+  if (!self) self = selfIn((await $.process.run(['ps', '-x', '-o', 'pid=,ppid=,tty=,command='], { timeoutMs: 5000 })).stdout) || null
 
   const before = await read($, snapshot)
   if (JSON.stringify(before.sessions) === JSON.stringify(found)) return
   await write($, 'sessions', () => found)
   show($, found, before.preview)
-}
-
-/** The shell prints its pid, then `exec`s `ps` under that same pid, so the table holds the way up. */
-async function findSelf($: EngineInterface): Promise<number> {
-  const sh = await $.process.run(['sh', '-c', `echo $$; exec ${PS_ARGV.join(' ')}`], { timeoutMs: 5000 })
-  const [pid = '', ...table] = sh.stdout.split('\n')
-  return sessionOf(table.join('\n'), Number(pid))
 }
 
 export const register: Register = (on, options) => {
