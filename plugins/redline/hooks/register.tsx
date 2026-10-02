@@ -183,7 +183,6 @@ async function refreshUsage($: EngineInterface): Promise<void> {
 }
 
 async function poll($: EngineInterface): Promise<void> {
-  // The README's "What it runs" names these two programs; both only read the process table.
   const ps = await $.process.run(['ps', '-x', '-o', 'pid=,ppid=,tty=,args='], { timeoutMs: 5000 })
   if (ps.exitCode !== 0) return
   let found = sessionsIn(ps.stdout)
