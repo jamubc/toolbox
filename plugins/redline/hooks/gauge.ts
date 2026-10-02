@@ -21,11 +21,11 @@ export type Stage = { from: number; name: string; line: string }
 /** Each stage starts at `from` working sessions. */
 export const STAGES: readonly Stage[] = [
   { from: 0, name: 'Napping', line: 'Engine off.' },
-  { from: 1, name: 'Idling', line: 'Ticking over. Barely any boost.' },
+  { from: 1, name: 'Idling', line: 'This is peaceful.' },
   { from: 3, name: 'Cruising', line: 'Smooth and steady.' },
-  { from: 6, name: 'Spooling up', line: "The turbo's starting to whistle." },
-  { from: 9, name: 'Boost building', line: "Needle's climbing. Hold on." },
-  { from: AMBER, name: 'Under pressure…', line: 'Into the amber. Pushing hard.' },
+  { from: 6, name: 'Busy', line: "Things are heating up." },
+  { from: 9, name: 'Very Busy', line: "Needle's climbing." },
+  { from: AMBER, name: 'Under Pressure', line: 'Pushing hard.' },
   { from: RED, name: 'Redline', line: 'Needle in the red.' },
   { from: 21, name: 'Overboost', line: "Past the red. Something's going to give." },
   { from: SCALE, name: 'Blown', line: 'Pinned. Blow-off valve wide open.' },
