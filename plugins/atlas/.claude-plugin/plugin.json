@@ -1,11 +1,20 @@
 {
   "name": "atlas",
-  "version": "0.1.0",
-  "description": "Adds /atlas: a file explorer in a pane beside Claude Code. Open a file to edit it in micro.",
-  "author": { "name": "jamubc" },
+  "version": "0.2.0",
+  "description": "Adds /atlas: a file explorer in a pane beside Claude Code, with git marks, search by name or text, and micro to edit a file.",
+  "author": {
+    "name": "jamubc"
+  },
   "repository": "https://github.com/jamubc/toolbox",
   "license": "MIT",
-  "keywords": ["mod", "files", "explorer", "editor", "micro", "pane"],
+  "keywords": [
+    "mod",
+    "files",
+    "explorer",
+    "editor",
+    "micro",
+    "pane"
+  ],
   "types": "./types/index.d.ts",
   "userConfig": {
     "editor": {

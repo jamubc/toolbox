@@ -33,10 +33,16 @@ test('the pane shows the service tab and its conversations, and a press opens on
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
     expect(await ui.find({ text: ' iMessage ' })).toBeDefined()
-    expect((await ui.find({ key: 'open-imessage-2' }))?.text).toBe('  Book club')
+    expect((await ui.find({ key: 'open-imessage-2' }))?.text).toBe('Book club')
+    // The row shows who is in it and its newest message.
+    expect(await ui.find({ text: /3 people/ })).toBeDefined()
+    expect(await ui.find({ text: /You: on my way/ })).toBeDefined()
     await ui.press({ key: 'open-imessage-1' })
     expect(await ui.find({ text: /see you at six/ })).toBeDefined()
     expect(await ui.find({ text: /on my way/ })).toBeDefined()
+    // Messages sit under the day they came, and mine are "You".
+    expect(await ui.find({ text: '── Today ──' })).toBeDefined()
+    expect(await ui.find({ text: 'You' })).toBeDefined()
     await ui.press({ key: 'back' })
     await ui.unmount()
   }
@@ -54,7 +60,7 @@ test('a reply shows what it answers, with reactions; an attachment shows as a fi
     expect(await ui.find({ text: /👍/ })).toBeDefined()
     await ui.press({ key: 'back' })
     await ui.press({ key: 'open-imessage-2' })
-    expect(await ui.find({ text: /📎 photo\.png · 2 KB/ })).toBeDefined()
+    expect(await ui.find({ text: /🖼 photo\.png · 2 KB/ })).toBeDefined()
     await ui.press({ key: 'back' })
     await ui.unmount()
   }
@@ -217,9 +223,11 @@ test('the file name is the open button, and an unread chat is marked', async ($,
   await m.clock.advance(10_000)
 
   const ui = await mount($, 'terminal')
-  expect((await ui.find({ key: 'open-imessage-2' }))?.text).toBe('● Book club  1 new')
+  expect((await ui.find({ key: 'open-imessage-2' }))?.text).toBe('Book club')
+  expect(await ui.find({ text: '  1 new' })).toBeDefined()
+  expect(await ui.find({ text: /look at this/ })).toBeDefined()
   await ui.press({ key: 'open-imessage-2' })
-  expect((await ui.find({ key: 'open-file-12-0' }))?.text).toBe('📎 photo.png · 2 KB')
+  expect((await ui.find({ key: 'open-file-12-0' }))?.text).toBe('🖼 photo.png · 2 KB')
   await ui.press({ key: 'back' })
   await ui.unmount()
 })
@@ -270,12 +278,12 @@ test('the pane fits its width: narrow clips and shortens, wide gives a picture m
 
   const narrow = await sized(24, 12)
   // "+15555550102, +15555550103" would not fit; "Book club" does.
-  expect((await narrow.find({ key: 'open-imessage-2' }))?.text).toBe('  Book club')
+  expect((await narrow.find({ key: 'open-imessage-2' }))?.text).toBe('Book club')
   await narrow.press({ key: 'open-imessage-2' })
   await m.clock.settle()
   expect((await narrow.find({ key: 'copy-file-12-0' }))?.text).toBe('copy')
   expect((await narrow.find({ key: 'draft-reply' }))?.text).toBe('reply')
-  expect((await narrow.find({ key: 'open-file-12-0' }))?.text).toBe('📎 photo.png · 2 KB')
+  expect((await narrow.find({ key: 'open-file-12-0' }))?.text).toBe('🖼 photo.png · 2 KB')
   const small = await narrow.find({ key: 'picture-12-0' })
   await narrow.unmount()
 
@@ -289,4 +297,76 @@ test('the pane fits its width: narrow clips and shortens, wide gives a picture m
   // A 4:3 photo: as wide as a cramped pane lets it, and up to 24 rows in a roomy one.
   expect([small?.props.columns, small?.props.rows]).toEqual([11, 4])
   expect([large?.props.columns, large?.props.rows]).toEqual([64, 24])
+})
+
+test('older brings more history into the conversation, and latest returns to the end', async ($, on) => {
+  const m = mac(on)
+  await start($)
+  await m.clock.settle()
+  await openPane($)
+  const ui = await mount($, 'terminal')
+  await ui.press({ key: 'open-imessage-1' })
+  expect(await ui.find({ key: 'older' })).toBeDefined()
+  expect(await ui.find({ key: 'latest' })).toBeUndefined()
+
+  await ui.press({ key: 'older' })
+  await m.clock.settle()
+  // Nothing older than row 10: the service answered an empty page, so the start is marked.
+  const asked = m.runs.filter(argv => /channel:history/.test(argv[4] ?? '') && /m\.ROWID < 10/.test(argv[4] ?? ''))
+  expect(asked).toHaveLength(1)
+  expect(await ui.find({ key: 'latest' })).toBeDefined()
+  expect(await ui.find({ key: 'older' })).toBeUndefined()
+  expect(await ui.find({ text: /the start of this conversation/ })).toBeDefined()
+  await ui.press({ key: 'latest' })
+  expect(await ui.find({ key: 'latest' })).toBeUndefined()
+  await ui.press({ key: 'back' })
+  await ui.unmount()
+})
+
+test('pictures off in settings shows the file row alone', { options: { pictures: 'off' } }, async ($, on) => {
+  const m = mac(on)
+  await start($)
+  await m.clock.settle()
+  const ui = await mount($, 'terminal')
+  await ui.press({ key: 'open-imessage-2' })
+  await m.clock.settle()
+  expect(await ui.find({ key: 'picture-12-0' })).toBeUndefined()
+  expect(m.runs.filter(argv => argv[0] === '/usr/bin/sips')).toEqual([])
+  expect((await ui.find({ key: 'open-file-12-0' }))?.text).toBe('🖼 photo.png · 2 KB')
+  await ui.unmount()
+})
+
+test('blocks in settings packs a picture into cells, encoded once per size', { options: { pictures: 'blocks' } }, async ($, on) => {
+  const m = mac(on)
+  await start($)
+  await m.clock.settle()
+  const ui = await mount($, 'terminal')
+  await ui.press({ key: 'open-imessage-2' })
+  await m.clock.settle()
+  const picture = await ui.find({ key: 'picture-12-0' })
+  expect(picture?.type).toBe('Raster')
+  expect([picture?.props.columns, picture?.props.rows]).toEqual([32, 12])
+  const sips = m.runs.filter(argv => argv[0] === '/usr/bin/sips')
+  expect(sips[1]?.slice(1, 6)).toEqual(['-s', 'format', 'bmp', '-Z', '200'])
+  await ui.unmount()
+})
+
+test('a terminal that draws the alt text instead of pixels falls back to cells', async ($, on) => {
+  const m = mac(on)
+  on('ui.blit', () => ({ value: { deny: 'the Image draws its alt there: this terminal cannot read the file' } }))
+  await start($)
+  await m.clock.settle()
+  const ui = await mount($, 'terminal')
+  await ui.press({ key: 'open-imessage-2' })
+  await m.clock.advance(1_000)
+  expect((await ui.find({ key: 'picture-12-0' }))?.type).toBe('Image')
+  // Each refused probe is counted; the third turns pictures into cells for the session.
+  for (let i = 0; i < 2; i += 1) {
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'open-imessage-2' })
+    await m.clock.advance(1_000)
+  }
+  expect((await ui.find({ key: 'picture-12-0' }))?.type).toBe('Raster')
+  expect(m.toasts.at(-1)).toMatch(/colored blocks/)
+  await ui.unmount()
 })

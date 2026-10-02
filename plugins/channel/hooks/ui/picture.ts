@@ -1,6 +1,10 @@
 // Pictures in the pane. A thumbnail arrives as an uncompressed BMP (what
 // `sips` writes); it is drawn as real pixels where the terminal can, and as
-// half-block cells anywhere else.
+// half-block cells anywhere else. The same ideas as the browse pane's frames:
+// the terminal reads a PNG file itself where it draws pixels, cells are
+// averaged from the pixels they cover rather than sampled, and the encoded
+// cells of one picture at one size are kept, since a pane redraws often and
+// a picture seldom changes.
 
 export type Bitmap = { width: number; height: number; rgba: Uint8Array }
 
@@ -56,25 +60,78 @@ export function fit(bitmap: { width: number; height: number }, maxColumns: numbe
   return { columns, rows }
 }
 
+// The average color of the pixels a half-cell covers: a box filter, so a
+// photo shrunk to a few dozen cells keeps its tones instead of flickering
+// between the pixels that happen to land on a sample point.
+function average(bitmap: Bitmap, x0: number, x1: number, y0: number, y1: number): number {
+  const left = Math.min(bitmap.width - 1, Math.floor(x0))
+  const right = Math.max(left + 1, Math.min(bitmap.width, Math.ceil(x1)))
+  const top = Math.min(bitmap.height - 1, Math.floor(y0))
+  const bottom = Math.max(top + 1, Math.min(bitmap.height, Math.ceil(y1)))
+  let r = 0
+  let g = 0
+  let b = 0
+  let n = 0
+  for (let y = top; y < bottom; y += 1) {
+    let i = (y * bitmap.width + left) * 4
+    for (let x = left; x < right; x += 1) {
+      r += bitmap.rgba[i] ?? 0
+      g += bitmap.rgba[i + 1] ?? 0
+      b += bitmap.rgba[i + 2] ?? 0
+      n += 1
+      i += 4
+    }
+  }
+  if (n === 0) {
+    return 0
+  }
+
+  return (Math.round(r / n) << 16) | (Math.round(g / n) << 8) | Math.round(b / n)
+}
+
 // Packs a picture into Raster cells: one upper-half block per cell, the top
-// pixel as its foreground and the bottom pixel as its background.
+// half's average as its foreground and the bottom half's as its background.
 export function toCells(bitmap: Bitmap, columns: number, rows: number): string {
   const words = new Uint32Array(columns * rows * 3)
-  const pixel = (x: number, y: number) => {
-    const px = Math.min(bitmap.width - 1, Math.floor(((x + 0.5) * bitmap.width) / columns))
-    const py = Math.min(bitmap.height - 1, Math.floor(((y + 0.5) * bitmap.height) / (rows * 2)))
-    const i = (py * bitmap.width + px) * 4
-
-    return ((bitmap.rgba[i] ?? 0) << 16) | ((bitmap.rgba[i + 1] ?? 0) << 8) | (bitmap.rgba[i + 2] ?? 0)
-  }
+  const cellWidth = bitmap.width / columns
+  const halfHeight = bitmap.height / (rows * 2)
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < columns; col += 1) {
       const i = (row * columns + col) * 3
+      const x0 = col * cellWidth
+      const x1 = x0 + cellWidth
       words[i] = 0x2580
-      words[i + 1] = pixel(col, row * 2)
-      words[i + 2] = pixel(col, row * 2 + 1)
+      words[i + 1] = average(bitmap, x0, x1, row * 2 * halfHeight, (row * 2 + 1) * halfHeight)
+      words[i + 2] = average(bitmap, x0, x1, (row * 2 + 1) * halfHeight, (row * 2 + 2) * halfHeight)
     }
   }
 
   return new Uint8Array(words.buffer).toBase64()
+}
+
+// The cells of a bitmap at one size, encoded once: a redraw at the same size
+// (every message, every poll) reuses them; a resize makes the new size.
+const encoded = new WeakMap<Bitmap, Map<string, string>>()
+
+export function cellsOf(bitmap: Bitmap, columns: number, rows: number): string {
+  let sizes = encoded.get(bitmap)
+  if (sizes === undefined) {
+    sizes = new Map()
+    encoded.set(bitmap, sizes)
+  }
+  const size = `${columns}x${rows}`
+  let cells = sizes.get(size)
+  if (cells === undefined) {
+    cells = toCells(bitmap, columns, rows)
+    // A pane that changed width a few times keeps a few; not every size ever drawn.
+    if (sizes.size >= 4) {
+      const [oldest] = sizes.keys()
+      if (oldest !== undefined) {
+        sizes.delete(oldest)
+      }
+    }
+    sizes.set(size, cells)
+  }
+
+  return cells
 }

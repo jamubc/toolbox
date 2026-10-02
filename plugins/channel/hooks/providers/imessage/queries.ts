@@ -43,10 +43,16 @@ JOIN chat_message_join cmj ON cmj.message_id = r.ROWID
 WHERE (r.associated_message_type BETWEEN 2000 AND 2005 OR r.associated_message_type BETWEEN 3000 AND 3005)`
 
 export const Q = {
+  // Each chat with its newest message's text (or archived body) for a preview,
+  // and how many other people are in it.
   conversations: (limit: number) => `/* channel:conversations */
 SELECT c.ROWID id, c.guid guid, c.display_name name, c.chat_identifier ident, MAX(m.date) date,
        (SELECT group_concat(h.id, ', ') FROM chat_handle_join chj JOIN handle h ON h.ROWID = chj.handle_id
-        WHERE chj.chat_id = c.ROWID) people
+        WHERE chj.chat_id = c.ROWID) people,
+       (SELECT COUNT(*) FROM chat_handle_join chj WHERE chj.chat_id = c.ROWID) members,
+       (SELECT l.text FROM message l WHERE l.ROWID = MAX(cmj.message_id)) last,
+       (SELECT CASE WHEN l.text IS NULL THEN hex(l.attributedBody) END FROM message l WHERE l.ROWID = MAX(cmj.message_id)) lastBody,
+       (SELECT l.is_from_me FROM message l WHERE l.ROWID = MAX(cmj.message_id)) lastFromMe
 FROM chat c
 JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
 JOIN message m ON m.ROWID = cmj.message_id

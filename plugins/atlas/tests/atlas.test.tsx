@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { classOf, copyName, foldersBetween, literalPattern, nameProblem, relative, rows } from '../hooks/files'
+import { classOf, copyName, crumbs, folderMark, foldersBetween, literalPattern, nameProblem, parseGitStatus, parseGrep, relative, rows } from '../hooks/files'
 
 const ROOT = '/work'
 const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } } as const
@@ -19,7 +19,17 @@ const pane = (bodyColumns: number) => ({
 } as const)
 
 type Node = { kind: 'file' | 'dir'; text?: string }
-type World = { files: Map<string, Node>; runs: string[][]; calls: { route: string; body: any }[]; spawned: string[][] }
+type World = {
+  files: Map<string, Node>
+  runs: string[][]
+  calls: { route: string; body: any }[]
+  spawned: string[][]
+  store: Map<string, unknown>
+  // What `git status --porcelain -z` answers; null for no repository.
+  porcelain: string | null
+  // Whether ripgrep is installed.
+  hasRg: boolean
+}
 
 /** Stands in for the engine: a file tree in memory, the commands atlas runs, and an editor host. */
 function fakeWorld(on: On, surfaces: string[] = ['terminal'], answer = 'Cancel'): World {
@@ -29,8 +39,9 @@ function fakeWorld(on: On, surfaces: string[] = ['terminal'], answer = 'Cancel')
     [`${ROOT}/src/main.ts`, { kind: 'file', text: 'export const x = 1\n' }],
     [`${ROOT}/src/util.ts`, { kind: 'file', text: 'export {}\n' }],
     [`${ROOT}/README.md`, { kind: 'file', text: '# Demo\n' }],
+    [`${ROOT}/.env`, { kind: 'file', text: 'SECRET=1\n' }],
   ])
-  const world: World = { files, runs: [], calls: [], spawned: [] }
+  const world: World = { files, runs: [], calls: [], spawned: [], store: new Map(), porcelain: ' M src/main.ts\0?? notes.txt\0', hasRg: true }
   const childrenOf = (dir: string) => [...files.keys()].filter(p => p !== dir && p.slice(0, p.lastIndexOf('/')) === dir)
   const stat = (path: string) => {
     const node = files.get(path)
@@ -79,7 +90,25 @@ function fakeWorld(on: On, surfaces: string[] = ['terminal'], answer = 'Cancel')
     }
     const value = { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
     if (command === 'find') value.stdout = [...files.keys()].filter(p => p.includes('util')).join('\n')
+    if (command === 'git') {
+      if (world.porcelain === null) return { value: { ...value, exitCode: 128, stderr: 'fatal: not a git repository' } }
+      value.stdout = e.argv[3] === 'rev-parse' ? `${ROOT}\n` : world.porcelain
+    }
+    if (command === 'rg') {
+      if (!world.hasRg) return { deny: "ENOENT: posix_spawn 'rg'" }
+      const text = e.argv[e.argv.length - 2] ?? ''
+      value.stdout = [...files].filter(([, node]) => node.text?.includes(text)).map(([p, node]) => `${p}:${node.text!.split('\n').findIndex(l => l.includes(text)) + 1}:${node.text!.split('\n').find(l => l.includes(text))}`).join('\n')
+    }
+    if (command === 'grep') {
+      value.stdout = `${ROOT}/src/util.ts:1:export {}`
+    }
     return { value }
+  })
+  on('ui.panes', async () => ({ value: [{ id: 'atlas', title: 'Atlas', isShown: true, isFocused: false, isPlaced: true }] }) as never)
+  on('store.get', (_$, e) => ({ value: world.store.get(e.key) }))
+  on('store.set', (_$, e) => {
+    world.store.set(e.key, e.value)
+    return { value: undefined }
   })
   on('tool.call', { tool: 'AskUserQuestion' }, async (_$, e) => ({
     result: { questions: e.questions, answers: { [e.questions[0]!.question]: answer } },
@@ -100,7 +129,7 @@ function fakeWorld(on: On, surfaces: string[] = ['terminal'], answer = 'Cancel')
     if (route === '/key' && JSON.parse(e.init?.body ?? '{}').key === 'q') release()
     return { value: { status: 200, ok: true, headers: {}, text: '{"ok":true}' } }
   })
-  mock.env(on, { HOME: '/home/me' })
+  mock.env(on, { HOME: '/home/me', TERM_PROGRAM: 'ghostty' })
   return world
 }
 
@@ -284,7 +313,116 @@ describe('the editor', () => {
   })
 })
 
+describe('what git and the folder say', () => {
+  test('marks changed and untracked files, and folders holding them', async ($, on) => {
+    fakeWorld(on)
+    await start($)
+    const ui = await $.ui.mount({ plugin: 'atlas', surface: 'terminal', ...pane(120) })
+    expect(await ui.find({ text: '1 changed' })).toBeUndefined()
+    expect(await ui.find({ text: '2 changed' })).toBeDefined()
+    // src holds a modified file: a dot; the file itself shows M once src is open.
+    expect(await ui.find({ text: ' •' })).toBeDefined()
+    await ui.press({ key: 'n:src' })
+    expect(await ui.find({ text: ' M' })).toBeDefined()
+    await ui.press({ key: 'n:src/main.ts' })
+    expect(await ui.find({ text: 'modified' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('outside a repository nothing is marked', async ($, on) => {
+    const world = fakeWorld(on)
+    world.porcelain = null
+    await start($)
+    const ui = await $.ui.mount({ plugin: 'atlas', surface: 'terminal', ...pane(120) })
+    expect(await ui.find({ text: /changed$/ })).toBeUndefined()
+    expect(await ui.find({ text: ' •' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('dotfiles stay out of the tree until asked for, and the choice is kept', async ($, on) => {
+    const world = fakeWorld(on)
+    await start($)
+    const ui = await $.ui.mount({ plugin: 'atlas', surface: 'terminal', ...pane(80) })
+    expect(await ui.find({ key: 'n:.env' })).toBeUndefined()
+    expect((await ui.find({ key: 'hidden' }))?.text).toBe('Show dotfiles (1)')
+    await ui.press({ key: 'hidden' })
+    expect(await ui.find({ key: 'n:.env' })).toBeDefined()
+    expect(world.store.get('showHidden')).toBe(true)
+    await ui.press({ key: 'hidden' })
+    expect(await ui.find({ key: 'n:.env' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('the path is a trail of folders, each a step back up', async ($, on) => {
+    fakeWorld(on)
+    await start($)
+    const ui = await $.ui.mount({ plugin: 'atlas', surface: 'terminal', ...pane(80) })
+    await ui.press({ key: 'n:src' })
+    await ui.press({ key: 'open' })
+    expect(await ui.find({ key: 'n:main.ts' })).toBeDefined()
+    expect(await ui.find({ key: 'crumb:/work' })).toBeDefined()
+    await ui.press({ key: 'crumb:/work' })
+    expect(await ui.find({ key: 'n:src' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a markdown file previews rendered; a search by text lands on the line', async ($, on) => {
+    fakeWorld(on)
+    await start($)
+    const ui = await $.ui.mount({ plugin: 'atlas', surface: 'terminal', ...pane(80) })
+    await ui.press({ key: 'n:README.md' })
+    expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe('# Demo\n')
+    expect(await ui.find({ text: 'Preview' })).toBeDefined()
+
+    await ui.press({ key: 'mode-text' })
+    await ui.input({ key: 'find', text: 'const x' })
+    expect(await ui.find({ key: 'r:src/main.ts:1' })).toBeDefined()
+    expect(await ui.find({ text: /export const x = 1/ })).toBeDefined()
+    await ui.press({ key: 'r:src/main.ts:1' })
+    expect((await ui.find({ type: 'Code' }))?.props).toMatchObject({ source: 'export const x = 1\n', startLine: 1 })
+    await ui.unmount()
+  })
+
+  test('without ripgrep, grep searches instead', async ($, on) => {
+    const world = fakeWorld(on)
+    world.hasRg = false
+    await start($)
+    const ui = await $.ui.mount({ plugin: 'atlas', surface: 'terminal', ...pane(80) })
+    await ui.press({ key: 'mode-text' })
+    await ui.input({ key: 'find', text: 'export' })
+    expect(world.runs.some(r => r[0] === 'grep')).toBe(true)
+    expect(await ui.find({ key: 'r:src/util.ts:1' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('/atlas returns to the folder left open last time, folders and all', async ($, on) => {
+    const world = fakeWorld(on)
+    world.store.set(`root:${ROOT}`, { root: `${ROOT}/src`, expanded: [] })
+    expect((await start($)).text).toBe('Atlas opened on /work/src.')
+    const ui = await $.ui.mount({ plugin: 'atlas', surface: 'terminal', ...pane(80) })
+    expect(await ui.find({ key: 'n:main.ts' })).toBeDefined()
+    await ui.press({ key: 'crumb:/work' })
+    await ui.press({ key: 'n:src' })
+    expect(world.store.get(`root:${ROOT}`)).toEqual({ root: ROOT, expanded: [`${ROOT}/src`] })
+    await ui.unmount()
+  })
+})
+
 describe('the helpers', () => {
+  test('reads git status, grep output and a path\'s trail', () => {
+    const marks = parseGitStatus(' M a.ts\0?? new/\0A  b.ts\0R  c.ts\0old.ts\0 D gone.ts\0', '/r')
+    expect(marks).toEqual({ '/r/a.ts': 'M', '/r/new': '?', '/r/b.ts': 'A', '/r/c.ts': 'R', '/r/gone.ts': 'D' })
+    expect(folderMark('/r/new', marks)).toBe('?')
+    expect(folderMark('/r', marks)).toBe('M')
+    expect(folderMark('/r/other', marks)).toBeNull()
+    expect(parseGrep('/r/a.ts:12:  hello\nnot a hit\n/r/b.ts:3:x\u001b[31m', 10)).toEqual([
+      { path: '/r/a.ts', line: 12, text: 'hello' },
+      { path: '/r/b.ts', line: 3, text: 'x?[31m' },
+    ])
+    expect(crumbs('/home/me/work/src', '/home/me').map(c => c.label)).toEqual(['~', 'work', 'src'])
+    expect(crumbs('/etc/nginx', '/home/me').map(c => c.path)).toEqual(['/', '/etc', '/etc/nginx'])
+  })
+
   test('names, copies, paths and classes', () => {
     expect(nameProblem('ok.txt')).toBeNull()
     expect(nameProblem('a/b')).not.toBeNull()

@@ -52,7 +52,15 @@ export function createInbox() {
 
   return {
     setConversations(service: string, list: Conversation[]): void {
-      conversations.set(service, list.map(one => ({ ...one, name: strip(one.name) })))
+      conversations.set(
+        service,
+        list.map(one => ({ ...one, name: strip(one.name), preview: one.preview === undefined ? undefined : strip(one.preview) })),
+      )
+    },
+
+    // The conversation's own record, when the service listed it.
+    entryOf(ref: Ref): Conversation | undefined {
+      return conversations.get(ref.service)?.find(one => one.id === ref.conversation)
     },
 
     // One service's conversations, or with none named every service's, most
@@ -77,8 +85,23 @@ export function createInbox() {
       messages.set(keyOf(ref), list.map(clean).slice(-KEEP))
     },
 
+    // Older messages, fetched on request, in front of what is held; the
+    // KEEP limit gives way, since the person asked to see further back.
+    prependHistory(ref: Ref, list: Message[]): number {
+      const held = messages.get(keyOf(ref)) ?? []
+      const fresh = list.map(clean).filter(one => !held.some(other => other.id === one.id))
+      messages.set(keyOf(ref), [...fresh, ...held])
+
+      return fresh.length
+    },
+
     messages(ref: Ref): Message[] {
       return messages.get(keyOf(ref)) ?? []
+    },
+
+    // The newest message held for a conversation, for its row's preview.
+    lastOf(ref: Ref): Message | undefined {
+      return messages.get(keyOf(ref))?.at(-1)
     },
 
     // Takes one update in. Answers the message when it is one not seen before,

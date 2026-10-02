@@ -1,7 +1,7 @@
 // Pure helpers for paths, file classes and the flattened tree: nothing here
 // touches `$`, so the tests import them directly.
 
-import type { Entry } from '../types'
+import type { Entry, GitMark } from '../types'
 
 /**
  * A name from disk as drawable text: a file name may legally hold a newline
@@ -145,3 +145,78 @@ export function foldersBetween(root: string, path: string): string[] {
 
 /** `-iname` reads `* ? [ ]` as a pattern; the typed words are literal. */
 export const literalPattern = (text: string) => `*${text.replace(/[\\*?[\]]/g, '\\$&')}*`
+
+/** Whether an entry is hidden by convention: its name starts with a dot. */
+export const isHidden = (name: string) => name.startsWith('.')
+
+/** The folders from `home` or `/` down to `path`, each with its label and full path. */
+export function crumbs(path: string, home: string): { label: string; path: string }[] {
+  const out: { label: string; path: string }[] = []
+  const inHome = home !== '' && (path === home || path.startsWith(`${home}/`))
+  const base = inHome ? home : '/'
+  out.push({ label: inHome ? '~' : '/', path: base })
+  const rest = inHome ? path.slice(home.length) : path
+  let at = base
+  for (const part of rest.split('/').filter(Boolean)) {
+    at = join(at, part)
+    out.push({ label: part, path: at })
+  }
+  return out
+}
+
+/**
+ * `git status --porcelain -z` as marks by absolute path. An untracked folder
+ * is listed once with a trailing slash; everything beneath it is untracked.
+ * A rename lists the new name first, then the old, NUL-separated.
+ */
+export function parseGitStatus(porcelain: string, top: string): Record<string, GitMark> {
+  const marks: Record<string, GitMark> = {}
+  const fields = porcelain.split('\0')
+  for (let i = 0; i < fields.length; i += 1) {
+    const field = fields[i] ?? ''
+    if (field.length < 4) continue
+    const x = field[0] ?? ' '
+    const y = field[1] ?? ' '
+    const rel = field.slice(3)
+    const path = join(top, rel.replace(/\/$/, ''))
+    if (x === 'R' || x === 'C') {
+      marks[path] = 'R'
+      i += 1 // the old name follows
+    } else if (x === '?' && y === '?') marks[path] = '?'
+    else if (x === 'D' || y === 'D') marks[path] = 'D'
+    else if (x === 'A') marks[path] = 'A'
+    else if (x === 'M' || y === 'M' || x === 'T' || y === 'T') marks[path] = 'M'
+  }
+  return marks
+}
+
+/** The mark a folder shows: the strongest of what lies beneath it, or none. */
+export function folderMark(dir: string, marks: Readonly<Record<string, GitMark>>): GitMark | null {
+  let found: GitMark | null = null
+  const prefix = dir === '/' ? '/' : `${dir}/`
+  for (const [path, mark] of Object.entries(marks)) {
+    if (path === dir || path.startsWith(prefix)) {
+      if (mark === 'M' || mark === 'D') return 'M'
+      found = found ?? mark
+    }
+  }
+  return found
+}
+
+/** `path:line:text` lines as grep and ripgrep print them, absolute paths only. */
+export function parseGrep(output: string, limit: number): { path: string; line: number; text: string }[] {
+  const hits: { path: string; line: number; text: string }[] = []
+  for (const row of output.split('\n')) {
+    const match = /^(\/[^\0]*?):(\d+):(.*)$/.exec(row)
+    if (!match) continue
+    hits.push({ path: match[1] ?? '', line: Number(match[2]), text: printable((match[3] ?? '').trim()).slice(0, 160) })
+    if (hits.length >= limit) break
+  }
+  return hits
+}
+
+/** Whether a file is a picture a kitty-graphics terminal can read as it is: a PNG. */
+export const isPng = (name: string) => /\.png$/i.test(name)
+
+/** Whether a file reads as Markdown, drawn rendered rather than as source. */
+export const isMarkdown = (name: string) => /\.(md|mdx|markdown)$/i.test(name)

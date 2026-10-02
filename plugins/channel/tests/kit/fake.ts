@@ -160,7 +160,8 @@ export function world() {
           copy: async (text: string) => seen.copied.push(text) > 0,
           offers: async () => seen.offers,
           thumbnail: async () => undefined,
-          hasPixels: false,
+          pictures: 'cells' as const,
+          probe: async () => true,
         },
       }
     },

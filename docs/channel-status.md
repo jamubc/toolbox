@@ -1,6 +1,6 @@
 # channel: what is done and what is not
 
-As of 2026-10-01, version 0.3.0, uncommitted on `main`. Design:
+As of 2026-10-02, version 0.4.0. Design:
 `docs/superpowers/specs/2026-10-01-channel-foundation-design.md`.
 
 ## Done
@@ -30,8 +30,17 @@ As of 2026-10-01, version 0.3.0, uncommitted on `main`. Design:
 
 **UI**
 - Service tabs with unread counts; `All` tab from two services.
-- Pictures of any type macOS reads (JPEG, HEIC, PNG) preview inline: pixels
-  in kitty and Ghostty, colored blocks elsewhere.
+- Conversation rows with an avatar chip, when the chat last moved, how many
+  people are in it, and its newest message; twenty per tab, nine with hotkeys.
+- Messages under day separators, each sender in a stable color, "You" for
+  the person's own; hover lights a row.
+- Older-history paging in the pane (`↑ older`, `↓ latest`).
+- Pictures of any type macOS reads (JPEG, HEIC, PNG) and a PDF's first page
+  preview inline: pixels in kitty and Ghostty, colored blocks elsewhere.
+  Cells are box-filtered and cached per size. A `Pictures` setting (auto,
+  image, blocks, off), and a fall back to blocks after three refused draws,
+  as the browse pane does with frames.
+- Files carry a glyph by kind (picture, video, audio, PDF, archive, text).
 - The file name is the open button; unread chats marked; a run of messages
   from one sender shows the name once; the pane takes focus on `/channel`.
 
@@ -56,14 +65,12 @@ As of 2026-10-01, version 0.3.0, uncommitted on `main`. Design:
 - No implementation plan document (skipped on request).
 
 **iMessage gaps**
-- No older-history paging in the pane (the provider supports it).
-- No thread view, no search, no member list in the pane.
+- No thread view, no search, no member list in the pane (a count only).
 - Cannot send tapbacks, edit, or mark read: macOS offers no way.
-- Only the nine most recent conversations per tab.
+- Only the twenty most recent conversations per tab.
 
 **Known weak spots**
 - Two sessions can both toast once in a rare race (the store has no atomic
   write).
 - "Files this session touched" misses files changed only by shell commands.
 - The installed `channel@toolbox` 0.2.0 shadows the dev copy unless disabled.
-- The root README still has a stray pasted fragment near the bottom.
