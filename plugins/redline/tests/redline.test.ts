@@ -269,10 +269,13 @@ describe('the fleet', () => {
     await w.clock.settle()
     expect(w.stored['session:sess-me']).toMatchObject({ state: 'working' })
 
-    // A permission prompt: the check answers `ask`, and until the tool call goes through the heartbeat says what for.
+    // A permission prompt: the check answers `ask`, and once it has stayed open past the grace
+    // the heartbeat says what for, until the tool call goes through.
     w.checks[0] = 'ask'
     await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'call-1' } as any)
     await w.clock.settle()
+    expect(w.stored['session:sess-me']).toMatchObject({ state: 'working' })
+    await w.clock.advance(3500)
     expect(w.stored['session:sess-me']).toMatchObject({ state: 'waiting', waitingFor: 'approve Bash' })
     await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'call-1' } as any)
     await w.clock.settle()
@@ -281,6 +284,18 @@ describe('the fleet', () => {
     await $.turn.complete({ turnId: 't1', answer: 'done', durationMs: 10, isAborted: false, usage: {} } as any)
     await w.clock.settle()
     expect(w.stored['session:sess-me']).toMatchObject({ state: 'idle', turns: 1 })
+  })
+
+  test('an ask the auto-mode classifier answers within a second never reads as waiting', async ($, on) => {
+    const w = engine(on)
+    await boot($, w.clock)
+    await $.turn.start({ text: 'go', turnId: 't1' })
+    await w.clock.settle()
+    w.checks[0] = 'ask'
+    await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'call-2' } as any)
+    await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'call-2' } as any)
+    await w.clock.advance(10_000)
+    expect(w.stored['session:sess-me']).toMatchObject({ state: 'working', waitingFor: '' })
   })
 
   test('the pane shows a session that needs you first, from its heartbeat', async ($, on) => {

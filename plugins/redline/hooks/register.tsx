@@ -19,6 +19,8 @@ const PANE = 'redline'
 const FPS = 10
 const POLL_MS = 5000
 const BEAT_MS = 30_000
+/** Auto mode's classifier answers an `ask` in about a second; a person takes longer. */
+const ASK_GRACE_MS = 3000
 const EMPTY_USAGE: RedlineUsage = { fiveHour: null, sevenDay: null, context: null }
 
 type BandMode = 'always' | 'matters' | 'never'
@@ -44,6 +46,8 @@ let mySince = 0
 let myTurns = 0
 let myUsd: number | null = null
 let isPaneOpen = false
+/** The tool call whose permission `ask` is still open, if any. */
+let asking = ''
 let isInteractive = false
 let views: View[] = []
 const needles: Record<keyof Tanks, Needle> = { fiveHour: new Needle(), sevenDay: new Needle(), context: new Needle() }
@@ -278,16 +282,29 @@ export const register: Register = (on, options) => {
   })
 
   // A permission prompt is the main way a session waits on you: tool.check answers `ask` for
-  // it, inside the tool.call that then waits for your answer.
+  // it, inside the tool.call that then waits for the answer. Under auto mode the classifier
+  // answers an `ask` in about a second, so the session only counts as waiting once the call
+  // is still open after a short grace.
   on('tool.check', async ($, e, next) => {
     const decided = await next(e)
-    if (decided.decision === 'ask' && e.tool_use_id !== undefined) setState($, 'waiting', `approve ${e.tool}`)
+    if (decided.decision === 'ask' && e.tool_use_id !== undefined) {
+      const id = e.tool_use_id
+      const tool = e.tool
+      asking = id
+      void $.clock.sleep(ASK_GRACE_MS).then(
+        () => {
+          if (asking === id) setState($, 'waiting', `approve ${tool}`)
+        },
+        () => {},
+      )
+    }
     return decided
   })
 
   on('tool.call', async ($, e, next) => {
     if (e.tool === 'AskUserQuestion') setState($, 'waiting', 'a question')
     const result = await next(e)
+    asking = ''
     if (myState === 'waiting') setState($, 'working')
     return result
   })
@@ -412,7 +429,7 @@ export const register: Register = (on, options) => {
           <Text color={gear.isShifted ? RED : undefined} dimColor={!gear.isShifted}>{limiterWords}</Text>
         </Text>
         <Box gap={2}>
-          {!gear.isShifted && <Button key="shift" plain hotkey="s" label="shift at" onPress={() => void $.command.run({ command: 'redline', args: 'shift' })} />}
+          {!gear.isShifted && <Button key="shift" plain hotkey="s" label="shift now" onPress={() => void $.command.run({ command: 'redline', args: 'shift' })} />}
           {gear.isShifted && <Button key="lift" plain hotkey="l" label="lift" onPress={() => void $.command.run({ command: 'redline', args: 'lift' })} />}
           {manual.mode !== 'auto' && <Button key="auto" plain hotkey="a" label="auto" onPress={() => void $.command.run({ command: 'redline', args: 'auto' })} />}
         </Box>
