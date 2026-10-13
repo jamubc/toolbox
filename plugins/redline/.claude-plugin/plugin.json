@@ -1,8 +1,10 @@
 {
   "name": "redline",
-  "version": "1.1.4",
-  "description": "A tachometer for your Claude sessions: when the needle hits the redline, stop spawning and start finishing.",
-  "author": { "name": "jamubc" },
+  "version": "2.0.0",
+  "description": "A rev limiter for Claude Code: past the redline you set on your plan's windows, it shifts the session down to Sonnet or low effort until the window resets, and shows which of your sessions need you.",
+  "author": {
+    "name": "jamubc"
+  },
   "homepage": "https://github.com/jamubc/toolbox/tree/main/plugins/redline",
   "repository": "https://github.com/jamubc/toolbox",
   "documentationUrl": "https://github.com/jamubc/toolbox/blob/main/plugins/redline/README.md",
@@ -10,20 +12,55 @@
   "privacyPolicyUrl": "https://github.com/jamubc/toolbox/blob/main/PRIVACY.md",
   "termsOfServiceUrl": "https://github.com/jamubc/toolbox/blob/main/TERMS.md",
   "license": "MIT",
-  "keywords": ["mod", "gauge", "sessions", "status"],
+  "keywords": [
+    "mod",
+    "rate-limit",
+    "usage",
+    "sessions",
+    "limiter"
+  ],
   "types": "./types/index.d.ts",
   "userConfig": {
-    "statusLine": {
-      "type": "boolean",
-      "title": "Show the count at the bottom of the terminal",
-      "description": "Puts the stage and session count in the status line, e.g. \"Idling · 1/7\".",
-      "default": false
+    "redlineAt": {
+      "type": "number",
+      "title": "Shift down when the 5-hour window is this % used",
+      "description": "The redline on your plan's five-hour window. At or past it, every request this session makes goes out on the cheaper setting below, until the window resets.",
+      "default": 80
     },
-    "fuelGauge": {
-      "type": "boolean",
-      "title": "Show the fuel gauges",
-      "description": "Adds 5H, 7D and CTX dials beside the gauge: your plan's rate limits and this session's context.",
-      "default": false
+    "weeklyRedlineAt": {
+      "type": "number",
+      "title": "Shift down when the 7-day window is this % used",
+      "description": "The redline on your plan's seven-day window, the same way.",
+      "default": 90
+    },
+    "shift": {
+      "type": "string",
+      "title": "What shifting down does",
+      "description": "switch to Sonnet sends requests to the model below instead of the session's model (subagents too). lower effort sets the effort to low. warn only changes nothing and just shows the line.",
+      "options": [
+        "switch to Sonnet",
+        "lower effort",
+        "Sonnet and lower effort",
+        "warn only"
+      ],
+      "default": "switch to Sonnet"
+    },
+    "model": {
+      "type": "string",
+      "title": "The model to shift down to",
+      "description": "A full model id. Claude Code takes an id here, not an alias, so name the Sonnet (or Haiku) of your plan, as /model lists it.",
+      "default": "claude-sonnet-5-5"
+    },
+    "band": {
+      "type": "string",
+      "title": "The line above the prompt",
+      "description": "one line, always: the windows, the context and the other sessions, in one dim line. only when it matters: blank until the limiter shifts, a session needs you, or a window nears its redline. never: nothing above the prompt; /redline still opens the dash.",
+      "options": [
+        "one line, always",
+        "only when it matters",
+        "never"
+      ],
+      "default": "one line, always"
     }
   }
 }

@@ -2,56 +2,52 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import type { Canvas } from '../hooks/canvas'
-import { BAND_COLS, BIG, TALL, WIDE } from '../hooks/fuel'
-import { LARGE, Needle, SCALE, SMALL, gauge, stageFor } from '../hooks/gauge'
-import { cwdsIn, selfIn, sessionOf, sessionsIn } from '../hooks/sessions'
+import { clock } from '../hooks/limiter'
+import { AGENTS } from './fleet.test'
 
-// A real `ps -x -o pid=,ppid=,tty=,args=` table: five sessions in terminals, one mid-turn (its
-// caffeinate child), plus the daemon and its helpers, which do not count.
-const PS = `
-61627     1 ??       /Users/jam/.local/bin/claude daemon run --json-path /Users/jam/.claude/daemon.json
-61684 61627 ??       claude bg-pty-host --bg-pty-host /tmp/cc-daemon-501/spare.pty.sock 200 50
-90900 90889 ttys023  claude bg-spare --bg-spare /tmp/cc-daemon-501/spare.claim.sock
-94901 86963 ttys001  claude --resume c1bdb8b8-49b7-450a-8b5a-9538e6680657
-38136 38034 ttys005  claude -r
-15621 15520 ttys010  claude
-19785 15621 ttys010  caffeinate -i -t 300
-33697 33395 ttys039  claude -r
-80793 80644 ttys040  claude
-25341     1 ??       /opt/homebrew/bin/python3 server.py
-`
-
-const LSOF = ['p94901', 'fcwd', 'n/Users/jam/OpenCAD', 'p15621', 'fcwd', 'n/Users/jam/toolbox', 'p80793', 'fcwd', 'n/Users/jam/jamcli'].join('\n')
-
-// What `sh -c 'echo $$; exec ps …'` prints when this session is the one on ttys010.
-const SH = `${PS}70001 15621 ttys010  ps -x -o pid=,ppid=,tty=,command=\n70003 80793 ttys040  ps -x -o pid=,ppid=,tty=,args=\n` // the self lookup's table, with another session's poll in it
-
-const text = (cv: Canvas) => Array.from({ length: cv.rows }, (_, r) => cv.line(r)).join('\n')
+const RESET = '2026-10-13T20:00:00.000Z'
+const NOW = Date.parse('2026-10-13T16:00:00.000Z') // four hours into the five-hour window
+const AT_RESET = clock(Date.parse(RESET), NOW) // the reset on the wall clock, in this machine's zone
 
 // What `$.session.usage()` answers: the status line's figures, itemized.
-const USAGE = {
+const usageAt = (five: number, week = 31, context = 44, resetsAt = RESET) => ({
   startedAt: 0,
-  context: { window: 200000, tokens: 84000, percent: 42 },
+  context: { window: 200000, tokens: 88000, percent: context },
   rateLimits: [
-    { kind: 'five_hour', percentUsed: 42, resetsAt: '2026-10-02T20:00:00.000Z' },
-    { kind: 'seven_day', percentUsed: 71 },
+    { kind: 'five_hour', percentUsed: five, resetsAt },
+    { kind: 'seven_day', percentUsed: week },
   ],
-}
+  cost: { usd: 1.2 },
+})
+
+type World = { toasts: string[]; steps: any[]; spawns: any[]; stored: Record<string, unknown>; checks: Array<'allow' | 'ask' | 'deny'> }
 
 /** Stubs the engine beneath the mod. Call before the test's first use of `$`. */
-function engine(on: On, statuses: (string | undefined)[] = []) {
-  const clock = mock.clock(on)
-  on('process.run', ($, e) => {
-    const stdout = e.argv[0] === 'ps' ? SH : e.argv[0] === 'lsof' ? LSOF : ''
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-  on('session.usage', () => ({ value: USAGE }))
-  on('session.measure', ($, e) => ({ changed: e.changed }))
-  on('ui.status', ($, e) => {
-    statuses.push(e.text)
+function engine(on: On, usage = usageAt(62)): World & { clock: ReturnType<typeof mock.clock> } {
+  const world: World = { toasts: [], steps: [], spawns: [], stored: {}, checks: ['allow'] }
+  const clock = mock.clock(on, { now: NOW })
+  // The store, as the mod sees it: one JSON map shared by every session on the machine.
+  on('store.get', (_$, e) => ({ value: world.stored[e.key] }))
+  on('store.set', (_$, e) => {
+    world.stored[e.key] = e.value
     return { value: undefined }
   })
+  on('store.delete', (_$, e) => {
+    delete world.stored[e.key]
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: Object.keys(world.stored) }))
+  on('process.run', ($, e) => ({ value: { exitCode: 0, stdout: e.argv[1] === 'agents' ? AGENTS : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('session.usage', () => ({ value: usage }))
+  on('session.measure', ($, e) => ({ changed: e.changed }))
+  on('session.id', () => ({ value: 'sess-me' }))
+  on('session.cwd', () => ({ value: '/Users/jam/Documents/github/jamubc/toolbox' }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('ui.toast', ($, e) => {
+    world.toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.invalidate', () => ({ value: undefined }))
   on('command.register', () => ({ value: { command: 'redline' } }))
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
   on('ui.panes', () => ({ value: [] }))
@@ -59,7 +55,20 @@ function engine(on: On, statuses: (string | undefined)[] = []) {
   on('ui.blit', () => ({ value: {} }))
   on('ui.render', ($, e) => $.ui.resolve(e).Box({}))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
-  return clock
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_$, e) => ({ text: e.answer }) as any)
+  on('turn.step', async function* (_$, e) {
+    world.steps.push(e)
+    return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } } as any
+  })
+  on('agent.spawn', (_$, e) => {
+    world.spawns.push(e)
+    return { model: e.model ?? e.parentModel, agentId: 'a1' }
+  })
+  on('tool.check', () => ({ decision: world.checks[0]! }))
+  on('tool.call', () => ({ result: 'ran' }) as any)
+  return { ...world, clock }
 }
 
 async function boot($: Engine, clock: ReturnType<typeof mock.clock>) {
@@ -87,264 +96,207 @@ const pane = (surface: 'terminal' | 'desktop', bodyColumns = 80) =>
     props: { title: 'Redline', isFocused: false, bodyColumns, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
   }) as any
 
-describe('census', () => {
-  test('finds terminal sessions and the ones mid-turn', async () => {
-    const found = sessionsIn(PS)
-    expect(found.map(s => s.tty)).toEqual(['ttys001', 'ttys005', 'ttys010', 'ttys039', 'ttys040'])
-    expect(found.filter(s => s.isWorking).map(s => s.pid)).toEqual([15621])
-    expect(sessionsIn('')).toEqual([])
-  })
-
-  test('reads working directories from lsof', async () => {
-    expect(cwdsIn(LSOF).get(15621)).toBe('/Users/jam/toolbox')
-    expect(cwdsIn(LSOF).has(38136)).toBe(false)
-  })
-
-  test('finds the session a process runs under', async () => {
-    expect(sessionOf(SH, 70001)).toBe(15621)
-    expect(sessionOf(SH, 25341)).toBe(0)
-  })
-
-  test('finds this session from its own ps row, and waits when two look themselves up at once', async () => {
-    expect(selfIn(SH)).toBe(15621)
-    expect(selfIn(PS)).toBe(0)
-    expect(selfIn(`${SH}70002 80793 ttys040  ps -x -o pid=,ppid=,tty=,command=\n`)).toBe(0)
-  })
-})
-
-describe('gauge', () => {
-  test('names each stage from where it starts', async () => {
-    const names = [0, 1, 2, 3, 6, 9, 12, 13, 17, 18, 21, 24, 25, 99].map(n => stageFor(n).name)
-    expect(names).toEqual([
-      'Napping', 'Idling', 'Idling', 'Cruising', 'Busy', 'Very Busy', 'Very Busy',
-      'Under Pressure', 'Under Pressure', 'Redline', 'Overboost', 'Overboost', 'Blown', 'Blown',
-    ])
-  })
-
-  test('draws both dials in braille, the needle moving with the count', async () => {
-    for (const face of [SMALL, LARGE]) {
-      const low = gauge(face, { needle: 0, isNapping: false, isVenting: false, t: 0 })
-      const high = gauge(face, { needle: 20, isNapping: false, isVenting: false, t: 0 })
-      expect([low.rows, low.cols]).toEqual([face.rows, face.cols])
-      expect(text(low)).toMatch(/[⠁-⣿]/)
-      expect(text(high)).not.toBe(text(low))
+const step = ($: Engine, index = 0) => {
+  const stream = $.turn.step({ turnId: 't1', index, model: 'claude-opus-5-5', effort: 'high', messageCount: 1 } as any)
+  return (async () => {
+    for await (const _ of stream) {
+      // drain
     }
-    expect(text(gauge(LARGE, { needle: 0, isNapping: false, isVenting: false, t: 0 }))).toContain('CLAUDES')
-  })
-
-  test('snores while napping and vents steam when blown', async () => {
-    const snore = text(gauge(SMALL, { needle: 0, isNapping: true, isVenting: false, t: 1.9 }))
-    expect(snore).toMatch(/Z[\s\S]*z/) // rising from the bottom: small z low, big Z high
-    expect(text(gauge(SMALL, { needle: SCALE, isNapping: false, isVenting: true, t: 0.2 }))).toMatch(/[▓▒░]/)
-  })
-
-  test('the needle overshoots a new count, settles on it, and never passes the pin', async () => {
-    const needle = new Needle()
-    let peak = 0
-    for (let i = 0; i < 60; i++) peak = Math.max(peak, needle.step(10, 0.1))
-    expect(peak).toBeGreaterThan(10)
-    expect(Math.abs(needle.value - 10)).toBeLessThan(0.5)
-
-    let highest = 0
-    for (let i = 0; i < 100; i++) highest = Math.max(highest, needle.step(40, 0.1))
-    expect(highest).toBeLessThanOrEqual(SCALE)
-    expect(needle.value).toBeGreaterThan(SCALE - 3) // pressed against the pin
-  })
-})
-
-/**
- * What /clear does to a plugin: the session ends and a new one begins in the same process, so the
- * host's `$.state` reads as never written while the module, its pane and its timers live on. From
- * the mark, every read answers "never written" until the plugin writes that key again; through
- * `next`, so the drawing that read the key is still redrawn when it is written.
- */
-function clearSession(on: On, writes: any[] = []) {
-  let isCleared = false
-  const written = new Set<string>()
-  on('state.get', async (_$, e, next) => {
-    const got = await next(e)
-    return (isCleared && !written.has(e.key) ? { value: { value: undefined, version: 0 } } : got) as never
-  })
-  on('state.set', (_$, e, next) => {
-    if (isCleared) written.add(e.key)
-    writes.push(e)
-    return next(e)
-  })
-  on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
-  return async ($: Engine) => {
-    await ($ as any).session.end({ reason: 'clear', sessionId: 'before', resume: { id: 'before' } })
-    isCleared = true
-    written.clear()
-  }
+    return stream.result
+  })()
 }
 
-describe('after /clear', () => {
-  test('the pane stays open, the sessions stay counted, and /redline still closes it', { options: { statusLine: true } }, async ($, on) => {
-    const clear = clearSession(on)
-    const statuses: (string | undefined)[] = []
-    const clock = engine(on, statuses)
-    await boot($, clock)
-    expect((await run($, '12')).text).toMatch(/Very Busy/)
-    expect((await run($)).text).toMatch(/opened/)
-
-    await clear($)
-    const ui = await $.ui.mount(pane('terminal'))
-    expect(await ui.find({ type: 'Text', text: /Very Busy \(preview\)/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /1 working · 5 sessions/ })).toBeDefined()
-    await ui.unmount()
-    const above = await $.ui.mount(band('terminal'))
-    expect(await above.find({ type: 'Raster', key: 'gauge' } as any)).toBeUndefined() // the pane is still open
-    await above.unmount()
-    await clock.advance(1)
-
-    // The next poll finds the same sessions: the pane is still open, so /redline closes it.
-    await clock.advance(2000)
-    expect((await run($)).text).toMatch(/closed/)
-    expect(statuses.at(-1)).toBe('Very Busy · preview')
-  })
-})
-
-describe('mod', () => {
-  test('keeps off the status line by default', async ($, on) => {
-    const statuses: (string | undefined)[] = []
-    await boot($, engine(on, statuses))
-    expect(statuses.filter(s => s !== undefined)).toEqual([])
-  })
-
-  test('puts the stage and the count on the status line once switched on', { options: { statusLine: true } }, async ($, on) => {
-    const statuses: (string | undefined)[] = []
-    await boot($, engine(on, statuses))
-    expect(statuses).toContain('Idling · 1/5')
-  })
-
-  test('draws the gauge above the prompt, beside its stage', async ($, on) => {
-    await boot($, engine(on))
-    const ui = await $.ui.mount(band('terminal'))
-    expect(await ui.find({ type: 'Raster', key: 'gauge' } as any)).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /Idling/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /1 working · 5 sessions/ })).toBeDefined()
-    await ui.unmount()
-
-    const words = await $.ui.mount(band('desktop'))
-    expect(await words.find({ type: 'Text', text: /Idling · 1 working/ })).toBeDefined()
-    await words.unmount()
-  })
-
-  test('previews a count, then follows the sessions again', { options: { statusLine: true } }, async ($, on) => {
-    const statuses: (string | undefined)[] = []
-    await boot($, engine(on, statuses))
-    expect((await run($, '25')).text).toMatch(/Blown/)
-    expect(statuses.at(-1)).toBe('Blown · preview')
-    const ui = await $.ui.mount(band('terminal'))
-    expect(await ui.find({ type: 'Text', text: /Blown/ })).toBeDefined()
-    await ui.unmount()
-
-    await run($, 'live')
-    expect(statuses.at(-1)).toBe('Idling · 1/5')
-  })
-
-  test('/redline opens a pane listing every session, and the band steps aside', async ($, on) => {
-    await boot($, engine(on))
-    expect((await run($)).text).toMatch(/opened/)
-
-    const ui = await $.ui.mount(pane('terminal'))
-    expect(await ui.find({ type: 'Raster', key: 'gauge' } as any)).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /● ttys010 +toolbox {2}\(this one\)/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /○ ttys001 +OpenCAD/ })).toBeDefined()
-    await ui.unmount()
-
-    const above = await $.ui.mount(band('terminal'))
-    expect(await above.find({ type: 'Raster', key: 'gauge' } as any)).toBeUndefined()
-    await above.unmount()
-
-    expect((await run($)).text).toMatch(/closed/)
-  })
-})
-
-describe('fuel', () => {
-  const measured = {
-    context: { window: 200000, tokens: 110000, percent: 55 },
-    rateLimits: [{ kind: 'five_hour', percentUsed: 63, resetsAt: '2026-10-02T21:00:00.000Z' }],
-    changed: ['rateLimits'],
-  } as any
-
-  test('the option adds the dials to the band and the pane', { options: { fuelGauge: true } }, async ($, on) => {
-    await boot($, engine(on))
-    const above = await $.ui.mount(band('terminal'))
-    expect((await above.find({ type: 'Raster', key: 'gauge' } as any))?.props.columns).toBe(BAND_COLS)
-    await above.unmount()
-
-    await run($)
-    const paneUi = await $.ui.mount(pane('terminal'))
-    const raster = await paneUi.find({ type: 'Raster', key: 'gauge' } as any)
-    expect(raster?.props.columns).toBe(WIDE.cols)
-    expect(raster?.props.rows).toBe(WIDE.rows)
-    await paneUi.unmount()
-  })
-
-  test('a narrow pane stacks the dials, and resizing back lays them out again', { options: { fuelGauge: true } }, async ($, on) => {
-    await boot($, engine(on))
-    await run($)
-    const sizeAt = async (columns: number) => {
-      const ui = await $.ui.mount(pane('terminal', columns))
-      const r = await ui.find({ type: 'Raster', key: 'gauge' } as any)
+describe('the band', () => {
+  test('is one line above the prompt with the windows, the context and the other sessions', async ($, on) => {
+    const w = engine(on)
+    await boot($, w.clock)
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount(band(surface))
+      expect(await ui.find({ type: 'Text', text: /5h 62%/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /7d 31%/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /ctx 44%/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /1 working/ })).toBeDefined()
+      expect(await ui.find({ type: 'Raster' } as any)).toBeUndefined()
       await ui.unmount()
-      return [r?.props.columns, r?.props.rows]
     }
-    expect(await sizeAt(34)).toEqual([34, LARGE.rows + 2 * (BIG.rows + 1) + 1])
-    expect(await sizeAt(BIG.cols)).toEqual([LARGE.cols, TALL.rows])
-    expect(await sizeAt(80)).toEqual([WIDE.cols, WIDE.rows])
-    expect(await sizeAt(BIG.cols - 1)).toEqual([LARGE.cols, LARGE.rows])
   })
 
-  test('off, the band and the pane are the tach alone', async ($, on) => {
-    await boot($, engine(on))
-    const above = await $.ui.mount(band('terminal'))
-    expect((await above.find({ type: 'Raster', key: 'gauge' } as any))?.props.columns).toBe(SMALL.cols)
-    await above.unmount()
-
+  test('steps aside while the pane is open, and when there is a survey', async ($, on) => {
+    const w = engine(on)
+    await boot($, w.clock)
     await run($)
-    const paneUi = await $.ui.mount(pane('terminal'))
-    expect((await paneUi.find({ type: 'Raster', key: 'gauge' } as any))?.props.columns).toBe(LARGE.cols)
-    await paneUi.unmount()
+    const ui = await $.ui.mount(band('terminal'))
+    expect(await ui.find({ type: 'Text', text: /5h/ })).toBeUndefined()
+    await ui.unmount()
+    await run($)
+    const survey = await $.ui.mount({ ...band('terminal'), props: { ...band('terminal').props, hasSurvey: true } })
+    expect(await survey.find({ type: 'Text', text: /5h/ })).toBeUndefined()
+    await survey.unmount()
   })
 
-  test('a narrow band keeps the tach alone', { options: { fuelGauge: true } }, async ($, on) => {
-    await boot($, engine(on))
-    const above = await $.ui.mount(band('terminal', 70))
-    expect((await above.find({ type: 'Raster', key: 'gauge' } as any))?.props.columns).toBe(SMALL.cols)
+  test('with "only when it matters" it is blank until a window nears its redline', { options: { band: 'only when it matters' } }, async ($, on) => {
+    const w = engine(on, usageAt(30))
+    await boot($, w.clock)
+    const quiet = await $.ui.mount(band('terminal'))
+    expect(await quiet.find({ type: 'Text', text: /5h/ })).toBeUndefined()
+    await quiet.unmount()
+    await $.session.measure({ ...usageAt(70), changed: ['rateLimits'] } as any)
+    const loud = await $.ui.mount(band('terminal'))
+    expect(await loud.find({ type: 'Text', text: /5h 70%/ })).toBeDefined()
+    await loud.unmount()
+  })
+
+  test('"never" leaves the band alone', { options: { band: 'never' } }, async ($, on) => {
+    const w = engine(on)
+    await boot($, w.clock)
+    const ui = await $.ui.mount(band('terminal'))
+    expect(await ui.find({ type: 'Text', text: /5h/ })).toBeUndefined()
+    await ui.unmount()
+  })
+})
+
+describe('the limiter', () => {
+  test('sends a request on the session model under the redline', async ($, on) => {
+    const w = engine(on)
+    await boot($, w.clock)
+    await step($)
+    expect(w.steps[0].model).toBe('claude-opus-5-5')
+    expect(w.steps[0].effort).toBe('high')
+  })
+
+  test('shifts the request to Sonnet once the five-hour window is at the redline, and says so once', async ($, on) => {
+    const w = engine(on, usageAt(62))
+    await boot($, w.clock)
+    await $.session.measure({ ...usageAt(80), changed: ['rateLimits'] } as any)
+    expect(w.toasts).toEqual([`shifted down to Sonnet 5.5 until ${AT_RESET}: 5h window at 80%`])
+    await step($)
+    expect(w.steps[0].model).toBe('claude-sonnet-5-5')
+    expect(w.steps[0].effort).toBe('high')
+    const ui = await $.ui.mount(band('terminal'))
+    expect(await ui.find({ type: 'Text', text: /⇣ Sonnet 5\.5/ })).toBeDefined()
+    await ui.unmount()
+
+    // Subagents spawned while shifted go to Sonnet too.
+    await $.agent.spawn({ tool_use_id: 'x', prompt: 'look', description: 'look', subagentType: 'Explore', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'claude-opus-5-5', background: false, fork: false } as any)
+    expect(w.spawns[0].model).toBe('claude-sonnet-5-5')
+  })
+
+  test('the shift option chooses what changes, and the model option where to', { options: { shift: 'Sonnet and lower effort', redlineAt: 50, model: 'claude-haiku-5-5' } }, async ($, on) => {
+    const w = engine(on, usageAt(55))
+    await boot($, w.clock)
+    await step($)
+    expect(w.steps[0].model).toBe('claude-haiku-5-5')
+    expect(w.steps[0].effort).toBe('low')
+    expect(w.toasts).toEqual([])
+    const ui = await $.ui.mount(band('terminal'))
+    expect(await ui.find({ type: 'Text', text: /⇣ Haiku 5\.5 · low effort/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('"warn only" changes nothing and still says where the needle is', { options: { shift: 'warn only' } }, async ($, on) => {
+    const w = engine(on, usageAt(62))
+    await boot($, w.clock)
+    await $.session.measure({ ...usageAt(90), changed: ['rateLimits'] } as any)
+    expect(w.toasts).toEqual(['5h window at 90%: past the redline'])
+    await step($)
+    expect(w.steps[0].model).toBe('claude-opus-5-5')
+    const ui = await $.ui.mount(band('terminal'))
+    expect(await ui.find({ type: 'Text', text: /⇣ past the redline/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('lifts itself once the window resets', async ($, on) => {
+    const soon = new Date(NOW + 30_000).toISOString()
+    const w = engine(on, usageAt(90, 31, 44, soon))
+    await boot($, w.clock)
+    await step($)
+    expect(w.steps[0].model).toBe('claude-sonnet-5-5')
+    await w.clock.advance(40_000)
+    expect(w.toasts).toContain('back in gear')
+    await step($, 1)
+    expect(w.steps[1].model).toBe('claude-opus-5-5')
+  })
+
+  test('/redline shift, lift and auto take the lever by hand', async ($, on) => {
+    const w = engine(on, usageAt(62))
+    await boot($, w.clock)
+    expect((await run($, 'shift')).text).toMatch(new RegExp(`^Shifted down to Sonnet 5.5 until ${AT_RESET}`))
+    await step($)
+    expect(w.steps[0].model).toBe('claude-sonnet-5-5')
+    expect((await run($, 'auto')).text).toBe('Automatic again: in gear.')
+    await step($, 1)
+    expect(w.steps[1].model).toBe('claude-opus-5-5')
+
+    await $.session.measure({ ...usageAt(85), changed: ['rateLimits'] } as any)
+    expect((await run($, 'lift')).text).toMatch(new RegExp(`^Limiter lifted until ${AT_RESET}`))
+    await step($, 2)
+    expect(w.steps[2].model).toBe('claude-opus-5-5')
+    expect((await run($, 'auto')).text).toBe('Automatic again: shifted, 5h window at 85%.')
+    expect((await run($, 'what')).text).toMatch(/^Usage:/)
+  })
+})
+
+describe('the fleet', () => {
+  test('/redline opens the dash with the dials, the readouts, the limiter and every session', async ($, on) => {
+    const w = engine(on)
+    await boot($, w.clock)
+    expect(await run($)).toEqual({})
+    const ui = await $.ui.mount(pane('terminal'))
+    expect(await ui.find({ type: 'Raster', key: 'dash' } as any)).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: new RegExp(`resets ${AT_RESET} · 4h left`) })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: / 62%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /\$1\.20 this session/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /in gear · shifts at 80% of 5h, 90% of 7d/ })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'shift' } as any)).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /● fennec +working/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /toolbox.*this one/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /○ jam +idle/ })).toBeDefined()
+    await ui.unmount()
+
+    const words = await $.ui.mount(pane('desktop'))
+    expect(await words.find({ type: 'Raster' } as any)).toBeUndefined()
+    expect(await words.find({ type: 'Text', text: /Sessions/ })).toBeDefined()
+    await words.unmount()
+    expect(await run($)).toEqual({})
+  })
+
+  test('writes its heartbeat for the other sessions, and says when it waits on you', async ($, on) => {
+    const w = engine(on)
+    await boot($, w.clock)
+    expect(w.stored['session:sess-me']).toMatchObject({ id: 'sess-me', state: 'idle', cwd: '/Users/jam/Documents/github/jamubc/toolbox', context: 44, usd: 1.2, model: 'claude-opus-5-5', isShifted: false })
+
+    await $.turn.start({ text: 'go', turnId: 't1' })
+    await w.clock.settle()
+    expect(w.stored['session:sess-me']).toMatchObject({ state: 'working' })
+
+    // A permission prompt: the check answers `ask`, and until the tool call goes through the heartbeat says what for.
+    w.checks[0] = 'ask'
+    await $.tool.check({ tool: 'Bash', input: { command: 'ls' }, tool_use_id: 'call-1' } as any)
+    await w.clock.settle()
+    expect(w.stored['session:sess-me']).toMatchObject({ state: 'waiting', waitingFor: 'approve Bash' })
+    await $.tool.call({ tool: 'Bash', command: 'ls', tool_use_id: 'call-1' } as any)
+    await w.clock.settle()
+    expect(w.stored['session:sess-me']).toMatchObject({ state: 'working' })
+
+    await $.turn.complete({ turnId: 't1', answer: 'done', durationMs: 10, isAborted: false, usage: {} } as any)
+    await w.clock.settle()
+    expect(w.stored['session:sess-me']).toMatchObject({ state: 'idle', turns: 1 })
+  })
+
+  test('the pane shows a session that needs you first, from its heartbeat', async ($, on) => {
+    const w = engine(on)
+    await boot($, w.clock)
+    w.stored['session:sess-fennec'] = {
+      id: 'sess-fennec', cwd: '/Users/jam/Documents/tools/fennec', state: 'waiting', waitingFor: 'approve Bash', since: NOW - 120_000, at: NOW, turns: 3, context: 61, usd: 0.4, model: 'claude-opus-5-5', isShifted: true,
+    }
+    await w.clock.advance(5000)
+    const above = await $.ui.mount(band('terminal'))
+    expect(await above.find({ type: 'Text', text: /1 session needs you/ })).toBeDefined()
     await above.unmount()
-  })
-
-  test('a measurement moves the tanks', { options: { fuelGauge: true } }, async ($, on) => {
-    const clock = engine(on)
-    const writes: any[] = []
-    on('state.set', ($, e, next) => {
-      writes.push(e)
-      return next(e)
-    })
-    await boot($, clock)
-    await $.session.measure(measured)
-    const last = writes.filter(w => w.key === 'usage').at(-1)
-    expect(last?.value).toEqual({
-      fiveHour: { percent: 63, resetsAt: Date.parse('2026-10-02T21:00:00.000Z') },
-      sevenDay: null,
-      context: 55,
-    })
-  })
-
-  test('after /clear the tanks keep their last reading', { options: { fuelGauge: true } }, async ($, on) => {
-    const writes: any[] = []
-    const clear = clearSession(on, writes)
-    const clock = engine(on)
-    await boot($, clock)
-    await $.session.measure(measured)
-    await clear($)
-    const last = writes.filter(w => w.key === 'usage').at(-1)
-    expect(last?.value).toEqual({
-      fiveHour: { percent: 63, resetsAt: Date.parse('2026-10-02T21:00:00.000Z') },
-      sevenDay: null,
-      context: 55,
-    })
+    await run($)
+    const ui = await $.ui.mount(pane('terminal'))
+    const first = await ui.find({ type: 'Text', text: /needs you · approve Bash · 2m · ctx 61% · \$0\.40 · ⇣/ })
+    expect(first).toBeDefined()
+    await ui.unmount()
   })
 })

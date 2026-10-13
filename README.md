@@ -13,7 +13,7 @@ Little tools for [Claude Code](https://claude.com/product/claude-code).
 
 | Plugin | Install | What it is |
 | --- | --- | --- |
-| [redline](plugins/redline/README.md) | `/plugin install redline@toolbox` | A tachometer for your Claude sessions: why use many claude when few claude do trick. |
+| [redline](plugins/redline/README.md) | `/plugin install redline@toolbox` | A rev limiter for your plan: past the redline you set on the 5-hour or 7-day window, requests go out on Sonnet or at low effort until it resets. One line above the prompt shows the windows and which sessions need you. |
 | [channel](plugins/channel/README.md) | `/plugin install channel@toolbox` | Your chats in a pane beside Claude Code: read, reply, see pictures inline, page back through history, and get a toast when someone messages you. iMessage today, more chat apps to come. |
 | [instantnotes](plugins/instantnotes/README.md) | `/plugin install instantnotes@toolbox` | Your InstantNotes in a pane beside Claude Code: search as you type, read a note as Markdown, write one in the pane or with /note. Uses the InstantNotes MCP server when you have connected it. |
 | [browse](plugins/browse/README.md) | `/plugin install browse@toolbox` | Adds /browse: a web browser in a pane beside Claude Code. |

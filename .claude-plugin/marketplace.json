@@ -8,7 +8,7 @@
     {
       "name": "redline",
       "source": "./plugins/redline",
-      "description": "A tachometer for your Claude sessions: when the needle hits the redline, stop spawning and start finishing."
+      "description": "A rev limiter for Claude Code: past the redline you set on your plan's windows, it shifts the session down to Sonnet or low effort until the window resets, and shows which of your sessions need you."
     },
     {
       "name": "channel",
