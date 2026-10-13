@@ -1,354 +1,466 @@
-// redline: a turbo boost gauge above the prompt, its needle on how many Claude sessions in your
-// terminals are working. `/redline` opens a pane with a larger gauge and every session. With the
-// fuelGauge option on, three more dials ride along: the plan's five-hour and seven-day windows
-// and this session's context, from `$.session.usage()` and the `session.measure` pushes.
+// redline: a rev limiter for Claude Code. It watches your plan's five-hour and seven-day windows
+// and, once one is past the redline you set, shifts this session down (Sonnet, low effort, or
+// both) on every model request until the window resets. One quiet line above the prompt says
+// where the windows stand and which of your other sessions need you; /redline opens the dash.
 //
-// The render hooks mount Rasters; one 10 fps timer steps the needles and repaints them with
-// `$.ui.blit`, with no render pass. Sessions live in `$.state`, so they survive a hot reload, and
-// in this module too, so they survive a /clear (which empties `$.state`: see `snapshot`).
+// State lives in this module: it survives /clear (which empties `$.state`) and is rebuilt on a
+// hot reload by `session.start`. Each session running redline writes a heartbeat to the shared
+// `$.store`, so every session can list the others with their exact state.
 
-import { atom, derive, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { RedlineSession, RedlineUsage } from '../types'
-import { BAND_COLS, BIG, TALL, bandCanvas, fracOf, paneCanvas, paneLayout, tankFrac, usageFrom, type PaneLayout, type Tanks } from './fuel'
-import { LARGE, Needle, SCALE, SMALL, colorFor, gauge, stageFor, type Face } from './gauge'
-import { cwdsIn, lsofArgv, selfIn, sessionsIn } from './sessions'
+import type { RedlineBeat, RedlineUsage } from '../types'
+import { type Segment, bandSegments, bandLine, matters } from './band'
+import { type Agent, type Row, agentsIn, fleet } from './fleet'
+import { BIG, Needle, SCALE, type Tanks, dashCanvas, dashLayout, tanksNow, usageFrom } from './fuel'
+import { DEFAULT_MODEL, type Gear, LENGTH, type LimiterConfig, type Manual, clock, gearFor, paceOf, shiftFor, shiftWords, span, spawnModel, stepChange, windowNow } from './limiter'
 
 const PANE = 'redline'
 const FPS = 10
-const POLL_MS = 2000
-const BAND_WORDS = 20 // the columns the band's words need beside the fuel dials
+const POLL_MS = 5000
+const BEAT_MS = 30_000
 const EMPTY_USAGE: RedlineUsage = { fiveHour: null, sevenDay: null, context: null }
 
-const sessions = atom({ plugin: 'redline', key: 'sessions' } as const, [] as RedlineSession[])
-const preview = atom({ plugin: 'redline', key: 'preview' } as const, null as number | null)
-const isPaneOpen = atom({ plugin: 'redline', key: 'isPaneOpen' } as const, false)
-const seeded = atom({ plugin: 'redline', key: 'seeded' } as const, false)
-const usage = atom({ plugin: 'redline', key: 'usage' } as const, EMPTY_USAGE)
+type BandMode = 'always' | 'matters' | 'never'
+const BAND_OPTIONS: Record<string, BandMode> = { 'one line, always': 'always', 'only when it matters': 'matters', never: 'never' }
 
-// /clear ends the session but not the process: the host's `$.state` starts over empty while this
-// module, its pane and its timers live on, so read straight from the host there are suddenly no
-// sessions, no preview and no pane. `seeded` is false exactly then, and before the first
-// `session.start`. `snapshot` is what the drawings read, in one go: the host's while `seeded`,
-// else what this process last saw; `write` puts the kept values back before the first change
-// after a /clear, and a render that finds `seeded` false schedules that.
-type Snapshot = { sessions: RedlineSession[]; preview: number | null; isPaneOpen: boolean; usage: RedlineUsage }
-const KEYS = ['sessions', 'preview', 'isPaneOpen', 'usage'] as const
-let kept: Snapshot = { sessions: [], preview: null, isPaneOpen: false, usage: EMPTY_USAGE }
-let wasLive: boolean | null = null // what the last read saw; null before the first
-const snapshot = derive([seeded, sessions, preview, isPaneOpen, usage], (isLive, sessions, preview, isPaneOpen, usage): Snapshot => {
-  wasLive = isLive
-  if (!isLive) return kept
-  kept = { sessions, preview, isPaneOpen, usage }
-  return kept
-})
+type View = { requestId: string; columns: number }
 
-/** The one place the atoms are written: each key to its own, as the validator asks. */
-async function put<K extends keyof Snapshot>($: EngineInterface, key: K, value: Snapshot[K]): Promise<void> {
-  switch (key) {
-    case 'sessions': await update($, sessions, () => value as Snapshot['sessions']); break
-    case 'preview': await update($, preview, () => value as Snapshot['preview']); break
-    case 'isPaneOpen': await update($, isPaneOpen, () => value as Snapshot['isPaneOpen']); break
-    case 'usage': await update($, usage, () => value as Snapshot['usage']); break
-  }
-}
-
-/** After a /clear (or at the first start), writes what this process kept back to the host. */
-let reseeding: Promise<void> | null = null
-function reseed($: EngineInterface): Promise<void> {
-  reseeding ??= (async () => {
-    try {
-      if (await read($, seeded)) return
-      for (const key of KEYS) await put($, key, kept[key])
-      await update($, seeded, () => true)
-      wasLive = true
-    } finally {
-      reseeding = null
-    }
-  })()
-  return reseeding
-}
-
-/** Changes one value from what `snapshot` reads, and keeps it here too. */
-async function write<K extends keyof Snapshot>($: EngineInterface, key: K, change: (now: Snapshot[K]) => Snapshot[K]): Promise<void> {
-  // `kept` is current once a read has seen the host live: only this module writes these values.
-  if (wasLive === null) await read($, snapshot)
-  if (!wasLive) await reseed($)
-  const next = change(kept[key])
-  kept = { ...kept, [key]: next }
-  await put($, key, next)
-}
-
-/** `fuel` is the pane's dial layout, or true for the band's; absent, the tach draws alone. */
-type View = { requestId: string; face: Face; fuel?: PaneLayout | true }
-type TankKey = keyof Tanks
-
-const TANK_KEYS = ['fiveHour', 'sevenDay', 'context'] as const
-
-const needle = new Needle()
-const fuelNeedles: Record<TankKey, Needle> = {
-  fiveHour: new Needle(SCALE, 0),
-  sevenDay: new Needle(SCALE, 0),
-  context: new Needle(SCALE, 0),
-}
-const fuelReads: Record<TankKey, number | null> = { fiveHour: null, sevenDay: null, context: null }
+// What this process knows. A hot reload starts it over; session.start refills it.
+let config: LimiterConfig = { redlineAt: 80, weeklyRedlineAt: 90, shift: 'sonnet', model: DEFAULT_MODEL }
+let bandMode: BandMode = 'always'
+let usage: RedlineUsage = EMPTY_USAGE
+let manual: Manual = { mode: 'auto' }
+let wasShifted: boolean | null = null // the gear the last check saw; null before the first
+let agents: Agent[] = []
+let beats: RedlineBeat[] = []
+let rows: Row[] = []
+let lastFleet = ''
+let myId = ''
+let myModel = ''
+let myState: RedlineBeat['state'] = 'idle'
+let myWaitingFor = ''
+let mySince = 0
+let myTurns = 0
+let myUsd: number | null = null
+let isPaneOpen = false
+let isInteractive = false
 let views: View[] = []
-let tick = 0
-let working = 0 // the count the needle heads for: live, or the preview
-let reads = 0 // where the needle reads this frame
-let latestUsage: RedlineUsage = EMPTY_USAGE // the last figures the engine reported
-let hasFuel = false // the fuelGauge option
-let self: number | null = null // this session's pid, once looked for
-let hasStatusLine = false
+const needles: Record<keyof Tanks, Needle> = { fiveHour: new Needle(), sevenDay: new Needle(), context: new Needle() }
+const reads: Record<keyof Tanks, number | null> = { fiveHour: null, sevenDay: null, context: null }
 
-const workingIn = (all: readonly RedlineSession[]) => all.filter(s => s.isWorking).length
-const tally = (all: readonly RedlineSession[]) => `${workingIn(all)} working · ${all.length} session${all.length === 1 ? '' : 's'}`
-const folder = (cwd: string) => cwd.slice(cwd.lastIndexOf('/') + 1) || cwd || '?'
-const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`
+const RED = '#ff3b30'
+const AMBER = '#ffaf00'
+const toneColor = (tone: Segment['tone']) => (tone === 'red' ? RED : tone === 'amber' ? AMBER : undefined)
 
-/** Where each tank sits now: the stored fill, emptied once its reset time has passed. */
-function tanksNow(now: number): Tanks {
-  return {
-    fiveHour: tankFrac(latestUsage.fiveHour, now),
-    sevenDay: tankFrac(latestUsage.sevenDay, now),
-    context: fracOf(latestUsage.context),
+/** The engine's clock, read as `now()` plus the offset the last `sync` measured. */
+let skew = 0
+const now = () => Date.now() + skew
+async function sync($: EngineInterface): Promise<void> {
+  try {
+    skew = (await $.clock.now()) - Date.now()
+  } catch {
+    // the wall clock then
   }
 }
 
-/** True before any reading has been adopted (a fresh module, a hot reload, the option just on). */
-const isUnknown = (u: RedlineUsage) => u.fiveHour === null && u.sevenDay === null && u.context === null
+const gearNow = (at = now()): Gear => gearFor(usage, config, manual, at)
 
 /** What the dials draw: the sprung needle positions, in 0-1, or null while a tank has no reading. */
 function drawnTanks(): Tanks {
-  const at = (key: TankKey) => (fuelReads[key] === null ? null : fuelReads[key] / SCALE)
+  const at = (key: keyof Tanks) => (reads[key] === null ? null : reads[key] / SCALE)
   return { fiveHour: at('fiveHour'), sevenDay: at('sevenDay'), context: at('context') }
-}
-
-function cells(view: View): string {
-  const reading = { needle: reads, isNapping: working <= 0 && reads < 0.3, isVenting: working >= SCALE, t: tick / FPS }
-  if (view.fuel === undefined) return gauge(view.face, reading).encode()
-  const tanks = drawnTanks()
-  return (view.fuel === true ? bandCanvas(reading, tanks) : paneCanvas(reading, tanks, view.fuel)).encode()
 }
 
 function mounted(view: View): void {
   views = [...views.filter(v => v.requestId !== view.requestId), view]
 }
 
+/** One frame of the dials: step every needle and repaint the mounted rasters. */
 async function frame($: EngineInterface): Promise<void> {
-  tick += 1
-  reads = needle.step(working, 1 / FPS)
-  if (hasFuel) {
-    const tanks = tanksNow(Date.now())
-    for (const key of TANK_KEYS) {
-      const frac = tanks[key]
-      fuelReads[key] = frac === null ? null : fuelNeedles[key].step(frac * SCALE, 1 / FPS)
-    }
+  if (views.length === 0) return
+  const tanks = tanksNow(usage, now())
+  for (const key of ['fiveHour', 'sevenDay', 'context'] as const) {
+    const frac = tanks[key]
+    reads[key] = frac === null ? null : needles[key].step(frac * SCALE, 1 / FPS)
   }
   await Promise.all(
     views.map(async v => {
-      const res = await $.ui.blit({ requestId: v.requestId, key: 'gauge', cells: cells(v) })
+      const res = await $.ui.blit({ requestId: v.requestId, key: 'dash', cells: dashCanvas(drawnTanks(), dashLayout(v.columns)).encode() })
       if (res.deny !== undefined) views = views.filter(w => w !== v)
     }),
   )
 }
 
-function show($: EngineInterface, all: readonly RedlineSession[], previewing: number | null): void {
-  working = previewing ?? workingIn(all)
-  if (!hasStatusLine) return
-  const stage = stageFor(working).name
-  $.ui.status(previewing === null ? `${stage} · ${workingIn(all)}/${all.length}` : `${stage} · preview`)
+/** This session's heartbeat, as the other sessions read it. */
+function myBeat(cwd: string, now: number): RedlineBeat {
+  return {
+    id: myId,
+    cwd,
+    state: myState,
+    waitingFor: myWaitingFor,
+    since: mySince,
+    at: now,
+    turns: myTurns,
+    context: usage.context,
+    usd: myUsd,
+    model: myModel,
+    isShifted: gearNow(now).isShifted,
+  }
 }
 
-/** The engine's figures for the fuel dials; null when the engine has none to give. */
+async function beat($: EngineInterface): Promise<void> {
+  await sync($)
+  try {
+    const id = await $.session.id()
+    if (id !== myId) {
+      if (myId) await $.store.delete(`session:${myId}`)
+      myId = id
+    }
+    await $.store.set(`session:${myId}`, myBeat(await $.session.cwd(), now()))
+  } catch {
+    // the store is best effort: the dash still draws
+  }
+}
+
+function setState($: EngineInterface, state: RedlineBeat['state'], waitingFor = ''): void {
+  if (state === myState && waitingFor === myWaitingFor) return
+  myState = state
+  myWaitingFor = waitingFor
+  mySince = now()
+  void beat($).then(() => refleet($))
+}
+
+/** Reads the other sessions' heartbeats; a stale one is removed from the store. */
+async function readBeats($: EngineInterface): Promise<RedlineBeat[]> {
+  const found: RedlineBeat[] = []
+  const at = now()
+  for (const key of await $.store.keys()) {
+    if (!key.startsWith('session:')) continue
+    const value = (await $.store.get(key)) as RedlineBeat | undefined
+    if (!value || typeof value !== 'object' || typeof value.id !== 'string') continue
+    if (at - value.at > 24 * 3600_000) {
+      await $.store.delete(key)
+      continue
+    }
+    found.push(value)
+  }
+  return found
+}
+
+/** Folds the two sources into the rows, and redraws when they changed. */
+function refleet($: EngineInterface): void {
+  rows = fleet(agents, beats, myId, now())
+  const key = JSON.stringify(rows.map(r => [r.id, r.state, r.waitingFor, r.folder, Math.floor((r.forMs ?? 0) / 60_000)]))
+  if (key === lastFleet) return
+  lastFleet = key
+  $.ui.invalidate('ui.render')
+}
+
+async function poll($: EngineInterface): Promise<void> {
+  await sync($)
+  try {
+    const res = await $.process.run(['claude', 'agents', '--json'], { timeoutMs: 5000 })
+    if (res.exitCode === 0) agents = agentsIn(res.stdout)
+  } catch {
+    // keep the last listing
+  }
+  beats = await readBeats($).catch(() => beats)
+  refleet($)
+  checkGear($)
+}
+
+/** Notices the gear changing on its own (a window crossing the redline, or resetting) and says so. */
+function checkGear($: EngineInterface): void {
+  const at = now()
+  const gear = gearNow(at)
+  if (wasShifted === gear.isShifted) return
+  const wasKnown = wasShifted !== null
+  wasShifted = gear.isShifted
+  if (!wasKnown) return
+  if (gear.isShifted) {
+    const until = gear.until === null ? '' : ` until ${clock(gear.until, at)}`
+    $.ui.toast(config.shift === 'warn' ? `${gear.reason}: past the redline` : `shifted down to ${shiftWords(config)}${until}: ${gear.reason}`)
+  } else {
+    $.ui.toast('back in gear')
+  }
+  $.ui.invalidate('ui.render')
+  void beat($)
+}
+
+/** The engine's figures; null when the engine has none to give. */
 async function readUsage($: EngineInterface): Promise<RedlineUsage | null> {
   try {
-    const { rateLimits, context } = await $.session.usage()
+    const { rateLimits, context, cost } = await $.session.usage()
+    if (cost) myUsd = cost.usd
     return usageFrom(rateLimits, context.percent ?? null)
   } catch {
     return null
   }
 }
 
-/** Adopts new figures and writes them where the drawings can see them. */
-async function adoptUsage($: EngineInterface, found: RedlineUsage): Promise<void> {
-  latestUsage = found
-  await write($, 'usage', () => found)
-}
-
-async function refreshUsage($: EngineInterface): Promise<void> {
-  const found = await readUsage($)
-  if (found !== null) await adoptUsage($, found)
-}
-
-async function poll($: EngineInterface): Promise<void> {
-  const ps = await $.process.run(['ps', '-x', '-o', 'pid=,ppid=,tty=,args='], { timeoutMs: 5000 })
-  if (ps.exitCode !== 0) return
-  let found = sessionsIn(ps.stdout)
-  if (found.length) {
-    // lsof exits 1 when a pid has gone; the directories it did find still count.
-    const cwds = cwdsIn((await $.process.run(lsofArgv(found.map(s => s.pid)), { timeoutMs: 5000 })).stdout)
-    found = found.map(s => ({ ...s, cwd: cwds.get(s.pid) ?? '' }))
-  }
-  if (!self) self = selfIn((await $.process.run(['ps', '-x', '-o', 'pid=,ppid=,tty=,command='], { timeoutMs: 5000 })).stdout) || null
-
-  const before = await read($, snapshot)
-  if (JSON.stringify(before.sessions) === JSON.stringify(found)) return
-  await write($, 'sessions', () => found)
-  show($, found, before.preview)
+/** The pane's rows: the dash, the readouts, the limiter and the sessions. */
+function paneRows(): number {
+  return dashLayout(Infinity).rows + 9 + Math.max(1, rows.length)
 }
 
 export const register: Register = (on, options) => {
-  hasStatusLine = options.statusLine === true
-  hasFuel = options.fuelGauge === true
+  const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(1, Math.min(100, v)) : d)
+  const model = typeof options.model === 'string' && options.model.trim() ? options.model.trim() : DEFAULT_MODEL
+  config = { redlineAt: num(options.redlineAt, 80), weeklyRedlineAt: num(options.weeklyRedlineAt, 90), shift: shiftFor(options.shift), model }
+  bandMode = BAND_OPTIONS[String(options.band)] ?? 'always'
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-    if (!hasStatusLine) $.ui.status(undefined)
-    await $.command.register({
-      name: 'redline',
-      description: `Show your Claude sessions; /redline <0-${SCALE}> previews a count, /redline live follows again`,
-    })
-    await reseed($)
-    if (hasFuel) await refreshUsage($).catch(() => {})
-    const now = await read($, snapshot)
-    show($, now.sessions, now.preview)
-    const isOpen = (await $.ui.panes()).some(p => p.id === PANE)
-    await write($, 'isPaneOpen', () => isOpen)
-
+    await sync($)
+    mySince = now()
+    isInteractive = e.isInteractive
+    try {
+      await $.command.register({ name: 'redline', description: 'The dash: your plan windows, the limiter, and every session', argumentHint: '[shift|lift|auto]', immediate: true })
+    } catch {
+      // a reload registers it again
+    }
+    myModel = await $.session.model().catch(() => '')
+    const found = await readUsage($)
+    if (found) usage = found
+    isPaneOpen = await $.ui.panes().then(panes => panes.some(p => p.id === PANE), () => false)
+    wasShifted = gearNow().isShifted
+    await beat($)
     $.clock.every(1000 / FPS, () => void frame($).catch(() => {}))
-    if (e.isInteractive) {
-      const count = () => void poll($).catch(() => {})
-      count()
-      $.clock.every(POLL_MS, count)
+    $.clock.every(BEAT_MS, () => void beat($))
+    if (isInteractive) {
+      void poll($)
+      $.clock.every(POLL_MS, () => void poll($))
     }
     return result
   })
 
-  // The engine measures the session after every turn and whenever a rate-limit window moves a
-  // whole point; the figures ride the event, so the tanks only ever move on news.
+  // The engine measures after every turn and whenever a window moves a whole point.
   on('session.measure', async ($, e, next) => {
     const result = await next(e)
-    if (hasFuel) await adoptUsage($, usageFrom(e.rateLimits, e.context.percent ?? null))
+    await sync($)
+    usage = usageFrom(e.rateLimits, e.context.percent ?? null)
+    if (e.cost) myUsd = e.cost.usd
+    checkGear($)
+    $.ui.invalidate('ui.render')
     return result
   })
 
-  // /clear: the pane and the band stay up, so what they show is written back as soon as the
-  // host's state is the new session's (now, or from the next event if that comes later).
   on('session.end', async ($, e, next) => {
     const result = await next(e)
-    if (e.reason === 'clear') await reseed($).catch(() => {})
+    if (e.reason !== 'clear' && myId) await $.store.delete(`session:${myId}`).catch(() => {})
+    return result
+  })
+
+  on('turn.start', async ($, e, next) => {
+    setState($, 'working')
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined) {
+      myTurns += 1
+      setState($, 'idle')
+    }
+    return result
+  })
+
+  // The limiter: while shifted, every request goes out on the cheaper setting.
+  on('turn.step', async function* ($, e, next) {
+    const change = gearNow().isShifted ? stepChange(e, config) : null
+    return yield* next(change ? { ...e, ...change } : e)
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    const model = gearNow().isShifted ? spawnModel(e, config) : null
+    return next(model ? { ...e, model } : e)
+  })
+
+  // A permission prompt is the main way a session waits on you: tool.check answers `ask` for
+  // it, inside the tool.call that then waits for your answer.
+  on('tool.check', async ($, e, next) => {
+    const decided = await next(e)
+    if (decided.decision === 'ask' && e.tool_use_id !== undefined) setState($, 'waiting', `approve ${e.tool}`)
+    return decided
+  })
+
+  on('tool.call', async ($, e, next) => {
+    if (e.tool === 'AskUserQuestion') setState($, 'waiting', 'a question')
+    const result = await next(e)
+    if (myState === 'waiting') setState($, 'working')
     return result
   })
 
   on('command.run', { command: 'redline' }, async ($, e) => {
-    await reseed($)
-    const arg = e.args.trim()
-    if (arg === 'live') {
-      await write($, 'preview', () => null)
-      show($, (await read($, snapshot)).sessions, null)
-      return { text: 'Following your sessions again.' }
+    await sync($)
+    const arg = e.args.trim().toLowerCase()
+    const at = now()
+    const five = windowNow(usage.fiveHour, at)
+    const until = five?.resetsAt ?? at + LENGTH.fiveHour
+    if (arg === 'shift') {
+      manual = { mode: 'shift', until }
+      checkGear($)
+      return { text: `Shifted down to ${shiftWords(config)} until ${clock(until, at)}. /redline auto hands it back to the limiter.` }
     }
-    if (/^\d+$/.test(arg)) {
-      const count = Math.min(Number(arg), SCALE)
-      await write($, 'preview', () => count)
-      show($, (await read($, snapshot)).sessions, count)
-      return { text: `Previewing ${count} working: ${stageFor(count).name}. /redline live to follow your sessions again.` }
+    if (arg === 'lift') {
+      const gear = gearNow(at)
+      const liftUntil = gear.until ?? until
+      manual = { mode: 'lift', until: liftUntil }
+      checkGear($)
+      return { text: `Limiter lifted until ${clock(liftUntil, at)}. /redline auto hands it back.` }
     }
-    if (arg !== '') return { text: `Usage: /redline, /redline <0-${SCALE}>, /redline live` }
+    if (arg === 'auto') {
+      manual = { mode: 'auto' }
+      checkGear($)
+      const gear = gearNow(at)
+      return { text: gear.isShifted ? `Automatic again: shifted, ${gear.reason}.` : 'Automatic again: in gear.' }
+    }
+    if (arg !== '') return { text: 'Usage: /redline, /redline shift, /redline lift, /redline auto' }
 
-    if ((await read($, snapshot)).isPaneOpen) {
+    if (isPaneOpen) {
       await $.ui.close({ id: PANE })
-      return { text: 'Redline closed.' }
+      isPaneOpen = false
+      return {}
     }
-    const rows = LARGE.rows + 12 + (hasFuel ? TALL.rows - LARGE.rows : 0)
-    const opened = await $.ui.open({ id: PANE, title: 'Redline', rows })
-    await write($, 'isPaneOpen', () => true)
-    return { text: opened.isPlaced ? 'Redline opened.' : 'Redline opened; widen the terminal to see it.' }
+    const opened = await $.ui.open({ id: PANE, title: 'Redline', rows: paneRows() })
+    isPaneOpen = true
+    if (isInteractive) void poll($)
+    return opened.isPlaced ? {} : { text: 'Redline opened; widen the terminal to see it.' }
   })
 
   on('ui.close', async ($, e, next) => {
     const result = await next(e)
-    if (e.id === PANE) await write($, 'isPaneOpen', () => false)
+    if (e.id === PANE) {
+      isPaneOpen = false
+      views = []
+    }
     return result
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    // Drawn from what this process kept after a /clear; the host gets it back off the render.
-    if (!(await read($, seeded))) $.clock.after(0, () => void reseed($).catch(() => {}))
-    const { sessions: all, preview: previewing, isPaneOpen: isOpen, usage: heldUsage } = await read($, snapshot)
-    if (hasFuel && isUnknown(latestUsage)) latestUsage = heldUsage
-    if (e.props.hasSurvey || isOpen) {
-      views = views.filter(v => v.requestId !== e.requestId)
-      return next(e)
-    }
-    const shown = previewing ?? workingIn(all)
-    const stage = stageFor(shown)
-    const count = previewing === null ? tally(all) : 'preview · /redline live'
-
-    if (e.surface !== 'terminal') {
-      const { Text } = $.ui.resolve(e)
-      return <Text color={hex(colorFor(shown))}>{`${stage.name} · ${count}`}</Text>
-    }
-    const { Box, Text, Raster } = $.ui.resolve(e)
-    const withFuel = hasFuel && e.props.bodyColumns >= BAND_COLS + BAND_WORDS
-    const view: View = { requestId: e.requestId, face: SMALL, fuel: withFuel ? true : undefined }
-    mounted(view)
-    return (
-      <Box flexDirection="row">
-        <Raster key="gauge" columns={withFuel ? BAND_COLS : SMALL.cols} rows={SMALL.rows} cells={cells(view)} />
-        <Box flexDirection="column" paddingX={1}>
-          <Text bold color={hex(colorFor(shown))}>{stage.name}</Text>
-          {e.props.bodyColumns >= (withFuel ? BAND_COLS : SMALL.cols) + 30 && <Text dimColor wrap="truncate">{stage.line}</Text>}
-          <Text dimColor wrap="truncate">{count}</Text>
-        </Box>
-      </Box>
+    if (e.props.hasSurvey || bandMode === 'never' || isPaneOpen) return next(e)
+    await sync($)
+    const segments = bandSegments({ usage, gear: gearNow(), shift: config, redlineAt: config.redlineAt, weeklyRedlineAt: config.weeklyRedlineAt, rows, now: now() })
+    if (segments.length === 0 || (bandMode === 'matters' && !matters(segments))) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const theirs = await next(e)
+    const line = (
+      <Text wrap="truncate">
+        {segments.map((s, i) => (
+          <Text key={`seg-${i}`} color={toneColor(s.tone)} dimColor={s.tone === 'dim'} bold={s.tone === 'red'}>
+            {i === 0 ? s.text : `  ·  ${s.text}`}
+          </Text>
+        ))}
+      </Text>
     )
+    if (e.props.bodyColumns < bandLine(segments, Infinity).length) {
+      return <Box flexDirection="column"><Text dimColor wrap="truncate">{bandLine(segments, e.props.bodyColumns)}</Text>{theirs}</Box>
+    }
+    return <Box flexDirection="column">{line}{theirs}</Box>
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    if (!(await read($, seeded))) $.clock.after(0, () => void reseed($).catch(() => {}))
-    const { sessions: all, preview: previewing, usage: heldUsage } = await read($, snapshot)
-    if (hasFuel && isUnknown(latestUsage)) latestUsage = heldUsage
-    const shown = previewing ?? workingIn(all)
-    const stage = stageFor(shown)
-    const { Box, Text } = $.ui.resolve(e)
-    const list = (
+    await sync($)
+    const at = now()
+    const gear = gearNow(at)
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button } = elements
+    const width = e.props.bodyColumns
+
+    const five = windowNow(usage.fiveHour, at)
+    const week = windowNow(usage.sevenDay, at)
+    const fivePace = paceOf(five, LENGTH.fiveHour, at)
+    const weekPace = paceOf(week, LENGTH.sevenDay, at)
+    const percentColor = (percent: number, redlineAt: number) => (percent >= redlineAt ? RED : percent >= redlineAt - 20 ? AMBER : undefined)
+    const readout = (label: string, tank: { percent: number; resetsAt: number | null } | null, redlineAt: number, pace: ReturnType<typeof paceOf>) => {
+      if (!tank) return <Text dimColor>{`${label.padEnd(4)} no reading yet`}</Text>
+      const resets = tank.resetsAt === null ? '' : `resets ${clock(tank.resetsAt, at)} · ${span(tank.resetsAt - at)} left`
+      const runsOut = pace?.runsOutAt ? ` · runs out ${clock(pace.runsOutAt, at)} at this pace` : ''
+      return (
+        <Text wrap="truncate">
+          <Text dimColor>{label.padEnd(4)}</Text>
+          <Text color={percentColor(tank.percent, redlineAt)} bold={tank.percent >= redlineAt}>{`${String(Math.round(tank.percent)).padStart(3)}%`}</Text>
+          <Text dimColor>{`  ${resets}`}</Text>
+          {runsOut ? <Text color={AMBER}>{runsOut}</Text> : null}
+        </Text>
+      )
+    }
+    const readouts = (
       <Box flexDirection="column" paddingX={1}>
-        {all.length === 0 && <Text dimColor>No Claude sessions in terminals.</Text>}
-        {all.map(s => (
-          <Text wrap="truncate" dimColor={!s.isWorking}>
-            {`${s.isWorking ? '●' : '○'} ${s.tty.padEnd(8)} ${folder(s.cwd)}${s.pid === self ? '  (this one)' : ''}`}
+        {readout('5h', five, config.redlineAt, fivePace)}
+        {readout('7d', week, config.weeklyRedlineAt, weekPace)}
+        {usage.context === null ? (
+          <Text dimColor>{'ctx  no reading yet'}</Text>
+        ) : (
+          <Text wrap="truncate">
+            <Text dimColor>{'ctx '}</Text>
+            <Text color={percentColor(usage.context, 85)}>{`${String(Math.round(usage.context)).padStart(3)}%`}</Text>
+            <Text dimColor>{myUsd === null ? '' : `  $${myUsd.toFixed(2)} this session`}</Text>
+          </Text>
+        )}
+      </Box>
+    )
+
+    const limiterWords = gear.isShifted
+      ? `⇣ ${config.shift === 'warn' ? 'past the redline' : `shifted down to ${shiftWords(config)}`} · ${gear.reason}${gear.until === null ? '' : ` · lifts ${clock(gear.until, at)}`}`
+      : `in gear · shifts at ${config.redlineAt}% of 5h, ${config.weeklyRedlineAt}% of 7d${manual.mode === 'lift' ? ' · lifted by hand' : ''}`
+    const limiter = (
+      <Box flexDirection="column" paddingX={1}>
+        <Text wrap="truncate">
+          <Text bold color={gear.isShifted ? RED : undefined}>{'Limiter  '}</Text>
+          <Text color={gear.isShifted ? RED : undefined} dimColor={!gear.isShifted}>{limiterWords}</Text>
+        </Text>
+        <Box gap={2}>
+          {!gear.isShifted && <Button key="shift" plain hotkey="s" label="shift at" onPress={() => void $.command.run({ command: 'redline', args: 'shift' })} />}
+          {gear.isShifted && <Button key="lift" plain hotkey="l" label="lift" onPress={() => void $.command.run({ command: 'redline', args: 'lift' })} />}
+          {manual.mode !== 'auto' && <Button key="auto" plain hotkey="a" label="auto" onPress={() => void $.command.run({ command: 'redline', args: 'auto' })} />}
+        </Box>
+      </Box>
+    )
+
+    const mark = (r: Row) => (r.state === 'waiting' ? '!' : r.state === 'working' ? '●' : r.state === 'done' ? '✓' : '○')
+    const words = (r: Row) => {
+      const ago = r.forMs === null ? '' : ` · ${span(r.forMs)}`
+      const detail =
+        r.state === 'waiting' ? `needs you · ${r.waitingFor}${ago}`
+        : r.state === 'working' ? `working${ago}`
+        : r.state === 'done' ? `done${ago} ago`
+        : `idle${ago}`
+      const extra = r.beat ? [r.beat.context === null ? '' : `ctx ${Math.round(r.beat.context)}%`, r.beat.usd === null ? '' : `$${r.beat.usd.toFixed(2)}`, r.beat.isShifted ? '⇣' : ''].filter(Boolean).join(' · ') : ''
+      return `${detail}${extra ? ` · ${extra}` : ''}${r.isThis ? ' · this one' : ''}`
+    }
+    const nameWidth = Math.min(24, Math.max(8, ...rows.map(r => r.folder.length)))
+    const sessions = (
+      <Box flexDirection="column" paddingX={1}>
+        <Text bold>{rows.length === 0 ? 'Sessions' : `Sessions  ${rows.length}`}</Text>
+        {rows.length === 0 && <Text dimColor>none found yet</Text>}
+        {rows.map(r => (
+          <Text key={`row-${r.id}`} wrap="truncate" color={r.state === 'waiting' ? RED : undefined} dimColor={r.state === 'idle'} bold={r.state === 'waiting'}>
+            {`${mark(r)} ${r.folder.slice(0, nameWidth).padEnd(nameWidth)}  ${words(r)}`}
           </Text>
         ))}
       </Box>
     )
-    const words = (
-      <Box flexDirection="column" paddingX={1}>
-        <Text bold color={hex(colorFor(shown))}>{previewing === null ? stage.name : `${stage.name} (preview)`}</Text>
-        <Text dimColor wrap="wrap">{stage.line}</Text>
-        <Text dimColor>{tally(all)}</Text>
-      </Box>
-    )
-    if (e.surface !== 'terminal') {
-      return <Box flexDirection="column">{words}{list}</Box>
+
+    const gap = <Text> </Text>
+    if (!('Raster' in elements) || width < BIG.cols) {
+      return <Box flexDirection="column" paddingTop={1}>{readouts}{gap}{limiter}{gap}{sessions}</Box>
     }
-    const { Raster } = $.ui.resolve(e)
-    // A narrow pane stacks the dials, as many to a row as fit; a resize renders again and remounts.
-    const fuel = hasFuel && e.props.bodyColumns >= BIG.cols ? paneLayout(e.props.bodyColumns) : undefined
-    const view: View = { requestId: e.requestId, face: LARGE, fuel }
-    mounted(view)
-    const rasterCols = fuel?.cols ?? LARGE.cols
+    const layout = dashLayout(width)
+    mounted({ requestId: e.requestId, columns: width })
     return (
       <Box flexDirection="column" paddingTop={1}>
-        <Box flexDirection={e.props.bodyColumns >= rasterCols + 24 ? 'row' : 'column'}>
-          <Raster key="gauge" columns={rasterCols} rows={fuel?.rows ?? LARGE.rows} cells={cells(view)} />
-          {words}
+        <Box paddingX={Math.max(0, Math.floor((width - layout.cols) / 2))}>
+          <elements.Raster key="dash" columns={layout.cols} rows={layout.rows} cells={dashCanvas(drawnTanks(), layout).encode()} />
         </Box>
-        <Text> </Text>
-        {list}
+        {readouts}
+        {gap}
+        {limiter}
+        {gap}
+        {sessions}
       </Box>
     )
   })
 }
+

@@ -1,6 +1,7 @@
-// The fuel dials: a shallow arc with F at full (left) and E at empty (right), a red reserve at
-// the E end. Same dial library and palette as the tach. Each dial reads how much of its tank is
-// used: the plan's five-hour or seven-day rate-limit window, or this session's context.
+// The three dials on the dash: the plan's five-hour and seven-day windows, and this session's
+// context. Each is a shallow arc with F at the left and E at the right, a red reserve at the E
+// end, drawn in braille with the dial library. The plan windows drain, so their needles swing
+// from F to E as the window is used; the context fills, so its dial reads E to F.
 
 import type { SessionRateLimit } from 'claude-code'
 
@@ -8,44 +9,52 @@ import type { RedlineTank, RedlineUsage } from '../types'
 import type { Canvas } from './canvas'
 import { dial, shallow } from './dial'
 import { Dots } from './dots'
-import { DIAL, DIAL_DIM, HUB, LARGE, NEEDLE, RED_C, SMALL, TICK, tachDots, type Reading } from './gauge'
+
+export const DIAL = 0x6c6c6c
+export const DIAL_DIM = 0x4a4a4a
+export const TICK = 0xd0d0d0
+export const AMBER_C = 0xffaf00
+export const RED_C = 0xff3b30
+export const NEEDLE = 0xff875f
+export const HUB = 0xeeeeee
+
+/** The needle's scale: a tank's fill in 0-1 is drawn at `frac * SCALE`. */
+export const SCALE = 25
+
+/**
+ * A damped spring: a needle swings to a new reading with a little overshoot and settles on it,
+ * never past the pin at `SCALE` or below 0.
+ */
+export class Needle {
+  value = 0
+  private velocity = 0
+
+  /** Moves `dt` seconds toward `target`; returns where the needle reads now. */
+  step(target: number, dt: number): number {
+    const goal = Math.max(0, Math.min(target, SCALE))
+    this.velocity += (18 * (goal - this.value) - 5 * this.velocity) * dt
+    this.value += this.velocity * dt
+    if (this.value > SCALE) {
+      this.value = SCALE
+      this.velocity = -Math.abs(this.velocity) * 0.6
+    }
+    if (this.value < 0) {
+      this.value = 0
+      this.velocity = Math.abs(this.velocity) * 0.3
+    }
+    return this.value
+  }
+}
 
 /** How much of each tank is used, 0 to 1; null while that tank has no reading. */
 export type Tanks = { fiveHour: number | null; sevenDay: number | null; context: number | null }
 
-export type FuelFace = { cols: number; rows: number; big: boolean }
+export type FuelFace = { cols: number; rows: number }
 
-/** Beside the tach in the band: 4 rows, a label but no F/E letters. */
-export const MINI: FuelFace = { cols: 11, rows: 4, big: false }
-/** Under the tach in the pane: 6 rows, labelled F and E. */
-export const BIG: FuelFace = { cols: 15, rows: 6, big: true }
+/** One dial in the pane: 6 rows, labelled F and E. */
+export const BIG: FuelFace = { cols: 15, rows: 6 }
 
 const GAP = 2
-export const BAND_COLS = SMALL.cols + GAP + 3 * MINI.cols + 2 * GAP
-
-// The tach's hub is left of its panel's middle, its steam lane to the right; centered on the hub it spans this.
-const TACH_SPAN = 2 * (LARGE.cols - LARGE.cx / 2)
-
-/** How the pane fits the three big dials into `columns`: as many to a row as fit, 1 to 3. */
-export type PaneLayout = { perRow: number; cols: number; rows: number }
-
-export function paneLayout(columns: number): PaneLayout {
-  const perRow = Math.max(1, Math.min(3, Math.floor((columns + GAP) / (BIG.cols + GAP))))
-  const lines = Math.ceil(3 / perRow)
-  const rowCols = perRow * BIG.cols + (perRow - 1) * GAP
-  return {
-    perRow,
-    // Wide enough, where there is room, for the tach's hub to sit over the middle of the dials.
-    cols: Math.max(LARGE.cols, rowCols, Math.min(columns, TACH_SPAN)),
-    rows: LARGE.rows + lines * (BIG.rows + 1) + 1, // a blank row under the last dials, as above each
-  }
-}
-
-/** The pane at its widest: the three dials in one row under the tach. */
-export const WIDE = paneLayout(Infinity)
-/** The tallest the pane's dash gets: one dial to a row. */
-export const TALL = paneLayout(0)
-
 const FROM = (150 / 180) * Math.PI
 const SWEEP = (120 / 180) * Math.PI
 const RESERVE = 0.85 // the red band starts here, as a fraction of the tank used
@@ -66,8 +75,8 @@ export function fuelDial(face: FuelFace, frac: number | null, label: string, fil
       widthAt: t => (!dim && reserve(t) ? 1 : 0),
     },
     ticks: {
-      count: face.big ? 8 : 6,
-      majorEvery: face.big ? 4 : 3,
+      count: 8,
+      majorEvery: 4,
       length: 2,
       majorLength: 3,
       rank: 2,
@@ -78,45 +87,43 @@ export function fuelDial(face: FuelFace, frac: number | null, label: string, fil
       : {
           t: frac,
           color: reserve(frac) ? RED_C : NEEDLE,
-          inner: face.big ? 4 : 2.5,
-          tail: face.big ? 2.5 : 0,
-          width: face.big ? 1.4 : 1.0,
+          inner: 4,
+          tail: 2.5,
+          width: 1.4,
           hub: { color: HUB },
         },
   })
 
   dots.text(0, Math.round(face.cols / 2 - label.length / 2), label, dim ? DIAL_DIM : TICK)
-  if (face.big) {
-    const [start, end] = fills ? ['E', 'F'] : ['F', 'E']
-    dots.text(face.rows - 2, 0, start, dim ? DIAL_DIM : TICK)
-    dots.text(face.rows - 2, face.cols - 1, end, dim ? DIAL_DIM : RED_C)
-  }
+  const [start, end] = fills ? ['E', 'F'] : ['F', 'E']
+  dots.text(face.rows - 2, 0, start, dim ? DIAL_DIM : TICK)
+  dots.text(face.rows - 2, face.cols - 1, end, dim ? DIAL_DIM : RED_C)
   return dots
 }
 
-const LABELS = ['5H', '7D', 'CTX'] as const
+export const LABELS = ['5H', '7D', 'CTX'] as const
 
-const dialsFor = (face: FuelFace, tanks: Tanks): Dots[] =>
-  [tanks.fiveHour, tanks.sevenDay, tanks.context].map((frac, i) => fuelDial(face, frac, LABELS[i]!, i === 2))
+/** How the dash fits the three dials into `columns`: as many to a row as fit, 1 to 3. */
+export type DashLayout = { perRow: number; cols: number; rows: number }
 
-/** The band's dash: the tach with the three small dials beside it. */
-export function bandCanvas(reading: Reading, tanks: Tanks): Canvas {
-  const out = new Dots(BAND_COLS, SMALL.rows)
-  out.blit(tachDots(SMALL, reading), 0, 0)
-  dialsFor(MINI, tanks).forEach((panel, i) => out.blit(panel, 0, SMALL.cols + GAP + i * (MINI.cols + GAP)))
-  return out.toCanvas()
+export function dashLayout(columns: number): DashLayout {
+  const perRow = Math.max(1, Math.min(3, Math.floor((columns + GAP) / (BIG.cols + GAP))))
+  const lines = Math.ceil(3 / perRow)
+  return { perRow, cols: perRow * BIG.cols + (perRow - 1) * GAP, rows: lines * BIG.rows + (lines - 1) }
 }
 
-/** The pane's dash: the tach with the three big dials under it, `layout.perRow` to a row, each row centered. */
-export function paneCanvas(reading: Reading, tanks: Tanks, layout: PaneLayout = WIDE): Canvas {
+/** The dash at its widest: the three dials in one row. */
+export const WIDE = dashLayout(Infinity)
+
+/** The dash: the three dials, `layout.perRow` to a row, each row centered. */
+export function dashCanvas(tanks: Tanks, layout: DashLayout = WIDE): Canvas {
   const out = new Dots(layout.cols, layout.rows)
-  out.blit(tachDots(LARGE, reading), 0, Math.max(0, Math.min(layout.cols - LARGE.cols, Math.round(layout.cols / 2 - LARGE.cx / 2))))
-  const dials = dialsFor(BIG, tanks)
+  const dials = [tanks.fiveHour, tanks.sevenDay, tanks.context].map((frac, i) => fuelDial(BIG, frac, LABELS[i]!, i === 2))
   dials.forEach((panel, i) => {
     const line = Math.floor(i / layout.perRow)
     const inLine = Math.min(layout.perRow, dials.length - line * layout.perRow)
     const left = Math.floor((layout.cols - (inLine * BIG.cols + (inLine - 1) * GAP)) / 2)
-    out.blit(panel, LARGE.rows + 1 + line * (BIG.rows + 1), left + (i % layout.perRow) * (BIG.cols + GAP))
+    out.blit(panel, line * (BIG.rows + 1), left + (i % layout.perRow) * (BIG.cols + GAP))
   })
   return out.toCanvas()
 }
@@ -130,6 +137,11 @@ export function tankFrac(tank: RedlineTank | null, now: number): number | null {
 
 /** A bare percentage, clamped, as a fill; null stays null. */
 export const fracOf = (percent: number | null): number | null => (percent === null ? null : Math.max(0, Math.min(1, percent / 100)))
+
+/** Where each tank sits now, from the last figures: the plan windows empty once they reset. */
+export function tanksNow(usage: RedlineUsage, now: number): Tanks {
+  return { fiveHour: tankFrac(usage.fiveHour, now), sevenDay: tankFrac(usage.sevenDay, now), context: fracOf(usage.context) }
+}
 
 /** The two plan windows and the context, from what a measurement reported. */
 export function usageFrom(rateLimits: readonly SessionRateLimit[], contextPercent: number | null): RedlineUsage {
