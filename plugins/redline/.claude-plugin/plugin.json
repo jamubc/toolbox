@@ -1,6 +1,6 @@
 {
   "name": "redline",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "A rev limiter for Claude Code: past the redline you set on your plan's windows, it shifts the session down to Sonnet or low effort until the window resets, and shows which of your sessions need you.",
   "author": {
     "name": "jamubc"
